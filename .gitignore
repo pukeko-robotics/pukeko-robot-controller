@@ -1,1 +1,5 @@
 /_refs/
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
