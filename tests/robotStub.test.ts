@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { createRobotStubApp, createRobotState, ROBOT_COMMANDS, type RobotState } from '../src/robotStub.js'
+import { createRobotStubApp, createRobotState, ROBOT_COMMANDS, type RobotState } from '../robot-stub/robotStub.js'
 import type { Server } from 'node:http'
 
 let server: Server

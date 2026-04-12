@@ -17,13 +17,13 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       '@galvanized-pukeko/vue-ui/style.css': fileURLToPath(
         new URL(
-          '../../_refs/galvanized-pukeko-ai-ui/packages/galvanized-pukeko-vue-ui/src/assets/global.css',
+          '_refs/galvanized-pukeko-ai-ui/packages/galvanized-pukeko-vue-ui/src/assets/global.css',
           import.meta.url,
         ),
       ),
       '@galvanized-pukeko/vue-ui': fileURLToPath(
         new URL(
-          '../../_refs/galvanized-pukeko-ai-ui/packages/galvanized-pukeko-vue-ui/src',
+          '_refs/galvanized-pukeko-ai-ui/packages/galvanized-pukeko-vue-ui/src',
           import.meta.url,
         ),
       ),
