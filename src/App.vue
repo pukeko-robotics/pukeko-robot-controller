@@ -1,12 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { ChatInterface } from '@galvanized-pukeko/vue-ui'
 import WebcamPanel from './components/WebcamPanel.vue'
-import { useRobotChat } from './composables/useRobotChat'
-
-const webcamPanel = ref<InstanceType<typeof WebcamPanel> | null>(null)
-
-const { sendMessage, messages, isStreaming } = useRobotChat(() => webcamPanel.value)
 </script>
 
 <template>
@@ -14,20 +8,14 @@ const { sendMessage, messages, isStreaming } = useRobotChat(() => webcamPanel.va
     <header class="robot-header">
       <h1>Pukeko Robot Controller</h1>
     </header>
-    <main class="robot-main">
-      <div class="robot-panels">
-        <div class="panel webcam-section">
-          <h2>Camera Feed</h2>
-          <WebcamPanel ref="webcamPanel" />
-        </div>
-        <div class="panel chat-section">
-          <ChatInterface
-            :messages="messages"
-            :is-streaming="isStreaming"
-            @send-message="sendMessage"
-          />
-        </div>
-      </div>
+    <main class="robot-panels">
+      <section class="panel webcam-section">
+        <h2>Camera Feed</h2>
+        <WebcamPanel />
+      </section>
+      <section class="panel chat-section">
+        <ChatInterface />
+      </section>
     </main>
   </div>
 </template>
@@ -53,19 +41,17 @@ const { sendMessage, messages, isStreaming } = useRobotChat(() => webcamPanel.va
   font-weight: 600;
 }
 
-.robot-main {
-  flex: 1;
-  overflow: hidden;
-  padding: 1rem;
-}
-
 .robot-panels {
+  flex: 1;
   display: flex;
   gap: 1rem;
-  height: 100%;
+  padding: 1rem;
+  overflow: hidden;
 }
 
 .panel {
+  flex: 1;
+  min-width: 0;
   background: var(--bg-secondary, #16213e);
   border-radius: 8px;
   border: 1px solid var(--border-color, #0f3460);
@@ -80,15 +66,5 @@ const { sendMessage, messages, isStreaming } = useRobotChat(() => webcamPanel.va
   font-size: 0.9rem;
   font-weight: 600;
   border-bottom: 1px solid var(--border-color, #0f3460);
-}
-
-.webcam-section {
-  flex: 1;
-  min-width: 0;
-}
-
-.chat-section {
-  flex: 1;
-  min-width: 0;
 }
 </style>
