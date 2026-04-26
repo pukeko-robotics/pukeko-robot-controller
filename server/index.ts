@@ -8,7 +8,19 @@ import { createRobotTools } from '../src/agent/robotTools.js';
 const ROBOT_HOST = process.env.ROBOT_HOST ?? '192.168.4.1';
 const PORT = 3000;
 
-const llm = new ChatAnthropic({ model: 'claude-sonnet-4-6' });
+// disable_parallel_tool_use: client-fulfilled tools (capture_image) trigger
+// langgraph interrupt(). When the model batches two tool calls in one
+// assistant message — e.g. read_status + capture_image — the interrupt
+// fires mid-batch and the message history ends up with one tool_use that
+// has no immediately-following tool_result, which Anthropic rejects on the
+// next turn ("tool_use ids were found without tool_result blocks
+// immediately after"). Forcing one tool call per turn sidesteps this.
+const llm = new ChatAnthropic({
+  model: 'claude-sonnet-4-6',
+  invocationKwargs: {
+    tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+  },
+});
 
 const config = {
   ...DEFAULT_CONFIG,

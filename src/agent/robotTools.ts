@@ -77,5 +77,11 @@ export function createRobotTools(host: string): StructuredToolInterface[] {
         'Read the ultrasonic distance sensor. Returns distance to the nearest obstacle in centimetres ("-1.0" on read failure).',
       schema: z.object({}),
     }) as StructuredToolInterface,
+    tool(async () => callRobot(host, '/status'), {
+      name: 'read_status',
+      description:
+        'Cheap "is the robot alive" probe. Returns JSON {uptimeMs, lastCommand, lastSteps, lastCommandAtMs, lastDistanceCm}. Useful before issuing a longer sequence of moves; null fields mean the matching endpoint hasn\'t been called yet, and uptimeMs resets to 0 on every robot reboot.',
+      schema: z.object({}),
+    }) as StructuredToolInterface,
   ];
 }
