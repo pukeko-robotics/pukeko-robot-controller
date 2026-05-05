@@ -10,8 +10,35 @@ and/or read the ultrasonic sensor), then repeat until the goal is met.
 ## Prerequisites
 
 - Node.js >= 22
-- An `ANTHROPIC_API_KEY` environment variable (or configure a different LLM provider in `.gsloth.config.json`)
+- An LLM backend — either:
+  - A local [Ollama](https://ollama.com) server running a vision-capable, tool-supporting model (default: `qwen3-vl:8b`), or
+  - An `ANTHROPIC_API_KEY` for Claude
 - A webcam accessible to the browser
+
+## Choosing an LLM
+
+The backend picks its model from environment variables when `npm run server` starts.
+
+| Var | Default | Notes |
+|---|---|---|
+| `LLM_PROVIDER` | `ollama` | `ollama` or `anthropic` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Used when provider is `ollama` |
+| `OLLAMA_MODEL` | `qwen3-vl:8b` | Used when provider is `ollama`. Must support tool calling and ideally vision. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Used when provider is `anthropic` |
+| `ROBOT_HOST` | `192.168.4.1` | Robot HTTP API host |
+
+Ollama happy path:
+
+```sh
+ollama pull qwen3-vl:8b
+npm run server   # picks up LLM_PROVIDER=ollama implicitly
+```
+
+Anthropic opt-in:
+
+```sh
+LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-... npm run server
+```
 
 ## Install
 
@@ -19,13 +46,19 @@ and/or read the ultrasonic sensor), then repeat until the goal is met.
 npm install
 ```
 
-The `@galvanized-pukeko/vue-ui` library is resolved from `_refs/` during development.
-Clone the reference repos if they're not already present:
+`@galvanized-pukeko/vue-ui` and `@gaunt-sloth/*` are pulled from npm. During
+local development against unpublished versions of those packages, this repo
+expects a [Verdaccio](https://verdaccio.org) registry at `http://localhost:4873`
+— the gitignored `.npmrc` at the repo root routes those scopes there:
 
-```sh
-git clone https://github.com/Galvanized-Pukeko/gaunt-sloth-assistant _refs/gaunt-sloth-assistant
-git clone https://github.com/Galvanized-Pukeko/galvanized-pukeko-ai-ui _refs/galvanized-pukeko-ai-ui
 ```
+@gaunt-sloth:registry=http://localhost:4873
+@galvanized-pukeko:registry=http://localhost:4873
+```
+
+If you only want to consume the published versions on the public registry,
+delete `.npmrc` before `npm install`. Verdaccio container/auth setup is
+documented in [`gaunt-sloth-assistant/CONTRIBUTING.md`](https://github.com/Galvanized-Pukeko/gaunt-sloth-assistant/blob/main/CONTRIBUTING.md#local-development-registry-optional).
 
 ## Running with the robot stub (development / no hardware)
 

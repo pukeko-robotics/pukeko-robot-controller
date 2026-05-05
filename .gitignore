@@ -1,6 +1,7 @@
 /_refs/
 node_modules/
 dist/
+.npmrc
 *.tsbuildinfo
 *.log
 .vite/
