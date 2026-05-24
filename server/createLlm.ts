@@ -1,30 +1,29 @@
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { LlmProvider, LlmSpec } from '../src/lib/config.js';
 
-export type LlmProvider = 'ollama' | 'anthropic';
+export type { LlmProvider, LlmSpec };
 
 export interface LlmSelection {
   provider: LlmProvider;
   llm: BaseChatModel;
 }
 
-export function createLlm(): LlmSelection {
-  const provider = (process.env.LLM_PROVIDER ?? 'ollama') as LlmProvider;
-
-  if (provider === 'ollama') {
+export function createLlm(spec: LlmSpec): LlmSelection {
+  if (spec.provider === 'ollama') {
     return {
-      provider,
+      provider: 'ollama',
       llm: new ChatOllama({
-        baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-        model: process.env.OLLAMA_MODEL ?? 'gemma4:31b',
+        baseUrl: spec.baseUrl ?? 'http://localhost:11434',
+        model: spec.model,
       }),
     };
   }
 
-  if (provider === 'anthropic') {
+  if (spec.provider === 'anthropic') {
     return {
-      provider,
+      provider: 'anthropic',
       // disable_parallel_tool_use: client-fulfilled tools (capture_image)
       // trigger langgraph interrupt(). When the model batches two tool calls
       // in one assistant message — e.g. read_status + capture_image — the
@@ -32,7 +31,7 @@ export function createLlm(): LlmSelection {
       // tool_use that has no immediately-following tool_result, which
       // Anthropic rejects on the next turn.
       llm: new ChatAnthropic({
-        model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6',
+        model: spec.model,
         invocationKwargs: {
           tool_choice: { type: 'auto', disable_parallel_tool_use: true },
         },
@@ -40,5 +39,5 @@ export function createLlm(): LlmSelection {
     };
   }
 
-  throw new Error(`Unknown LLM_PROVIDER=${provider}. Expected 'ollama' or 'anthropic'.`);
+  throw new Error(`Unknown LLM provider: ${spec.provider}. Expected 'ollama' or 'anthropic'.`);
 }

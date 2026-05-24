@@ -1,8 +1,16 @@
 /_refs/
 node_modules/
 dist/
-.npmrc
+.claude/
+.npmrc.bk
 *.tsbuildinfo
 *.log
 .vite/
 .idea/vcs.xml
+logs/
+# User-local config; copy from pukeko.config.example.ts.
+/pukeko.config.ts
+/pukeko.config.js
+/pukeko.config.mjs
+/pukeko.config.json
+!/pukeko.config.example.ts
