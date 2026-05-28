@@ -331,6 +331,7 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
       let rebuilt = pruned;
       let summarized = false;
       let finalTokens = afterPruneTokens;
+      let summaryMs = 0;
 
       if (afterPruneTokens >= summarizeThreshold) {
         // Carve out the head slice — everything from the first HumanMessage
@@ -358,12 +359,19 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
             inflightSummaries.set(threadId, promise);
           }
           let summaryText = '';
+          const summaryStart = performance.now();
+          console.log(
+            `[context-pruner] thread=${threadId} threshold crossed ` +
+              `(pruned=${afterPruneTokens} ≥ ${summarizeThreshold}); ` +
+              `summarizing head of ${headSlice.length + 1} messages…`
+          );
           try {
             summaryText = await promise;
           } catch (err) {
             console.error('[context-pruner] summary call failed:', err);
           } finally {
             inflightSummaries.delete(threadId);
+            summaryMs = Math.round(performance.now() - summaryStart);
           }
 
           if (summaryText) {
@@ -386,17 +394,21 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
         stats.humanImagesStripped === 0 &&
         stats.reasoningStripped === 0 &&
         !summarized;
-      if (nothingChanged) return undefined;
 
+      // Always log — one line per LLM call so context-pruner activity is
+      // visible turn-by-turn even when nothing was pruned.
       console.log(
-        `[context-pruner] thread=${threadId} ` +
-          `tokens ${beforeTokens}→${finalTokens} (cap ${maxContextTokens}, ` +
-          `summarize@${summarizeThreshold}) ` +
+        `[context-pruner] → LLM thread=${threadId} msgs=${rebuilt.length} ` +
+          `tokens ${beforeTokens}→${finalTokens} ` +
+          `(cap ${maxContextTokens}, sum@${summarizeThreshold}) ` +
           `tool-data:${stats.toolImageDataStripped} ` +
           `human-images:${stats.humanImagesStripped} ` +
           `reasoning:${stats.reasoningStripped} ` +
-          `summarized:${summarized}`
+          `summarized:${summarized}` +
+          (summarized ? ` summary_ms:${summaryMs}` : '')
       );
+
+      if (nothingChanged) return undefined;
 
       return {
         messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), ...rebuilt],

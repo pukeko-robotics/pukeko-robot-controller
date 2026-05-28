@@ -12,10 +12,12 @@ Motion commands (`move_forward`, `move_backward`, `turn_left`, `turn_right`) **a
 
 ## Identify the robot
 
-Small black biped, anywhere in frame:
-- **Face (front):** HC-SR04 sensor — two **prominent** side-by-side metallic circular "eyes". They are the **largest circular features** on the robot and together span a large fraction of the body's width. Don't confuse them with the small screw heads on the sides, which are much tinier dots by comparison.
+Small black biped, anywhere in frame. The body is **not a featureless dark blob** — it carries unmistakable electronics that make it stand out from any other dark shape in the scene:
+- **Bright blue LED** glowing on the PCB. Often the most distinctive cue under typical lighting.
+- **Orange servo wires** looping around the torso/legs — the vivid orange is unique in this setup.
+- **Small green/blue PCB** visible on the side.
+- **Face (front):** HC-SR04 sensor — two **prominent** side-by-side metallic circular "eyes". The **largest circular features** on the robot; together they span a large fraction of the body's width. Don't confuse them with the small screw heads on the sides, which are much tinier dots by comparison.
 - **Tail (rear):** black power cord to the battery pack.
-- **Sides:** orange servo wires, small green/blue PCB.
 
 ## Position reporting (every turn)
 
@@ -69,10 +71,11 @@ For thin or flat goals, aim with the camera; expect distance to stay >50 cm.
 
 ## Loop
 
-1. Look at the latest After (right half) — or `capture_image` if no recent motion. State: body (h, v), face vector, confidence, what changed Before→After, whether it matched the command.
-2. Pick one command + small steps (1–2 forward, 2–4 turn; 3 turn while calibrating).
-3. Issue it. Compare **Before (left)** vs **After (right)** of the composite — don't skip this.
-4. For thin/distant targets, `read_distance` between motions.
-5. If anything surprises you, recalibrate before committing to a long sequence.
+1. **First, verify the robot is present in the After half.** Point to at least one of its distinctive features — the blue LED, the orange servo wires, the green/blue PCB, or the HC-SR04 eyes. **Other dark objects in the frame are NOT the robot.** If you cannot positively identify any of these features in the current frame, STOP — say "robot lost from frame" and ask the user. Do not narrate a robot that isn't there; do not infer position from non-robot shapes.
+2. Look at the latest After (right half) — or `capture_image` if no recent motion. State: body (h, v), face vector, confidence, what changed Before→After, whether it matched the command.
+3. Pick one command + small steps (1–2 forward, 2–4 turn; 3 turn while calibrating).
+4. Issue it. Compare **Before (left)** vs **After (right)** of the composite — don't skip this.
+5. For thin/distant targets, `read_distance` between motions.
+6. If anything surprises you, recalibrate before committing to a long sequence.
 
 Be methodical. Each step, in one short paragraph: position, heading + confidence, what changed, next move and why.
