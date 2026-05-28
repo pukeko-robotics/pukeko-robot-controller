@@ -7,6 +7,6 @@ Cover, in a few terse sentences:
 - Open questions, obstacles, or sensor caveats (e.g. a flat or thin target the ultrasonic can't see).
 
 Rules:
-- Write conclusions and current state, NOT a list of the commands issued — recent moves are tracked separately and appended for you.
+- Write conclusions and current state.
 - Do NOT include base64 data or image URLs.
 - Plain text, terse, present tense.

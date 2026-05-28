@@ -15,6 +15,7 @@ export interface LlmSpec {
 export type BuiltinMiddlewareId =
   | 'frontend-images'
   | 'motion-summary'
+  | 'context-pruner'
   | 'observability';
 
 // Arbitrary middleware object the user can pass in from a .ts/.js config.
@@ -33,6 +34,13 @@ export interface RobotOptions {
   host?: string;
 }
 
+export interface ContextPrunerProfileOpts {
+  maxContextTokens?: number;
+  summarizeAtFraction?: number;
+  keepLatestImages?: number;
+  imageTokenBudget?: number;
+}
+
 export interface PukekoProfile {
   llm: LlmSpec;
   // Path to the agent's behavioural system prompt, resolved from the project
@@ -46,6 +54,7 @@ export interface PukekoProfile {
   middleware?: MiddlewareEntry[];
   observability?: ObservabilityOptions;
   robot?: RobotOptions;
+  contextPruner?: ContextPrunerProfileOpts;
 }
 
 export interface PukekoConfig {

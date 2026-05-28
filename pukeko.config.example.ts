@@ -24,5 +24,21 @@ export default defineConfig({
       llm: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
       middleware: ['frontend-images', 'motion-summary'],
     },
+
+    // Alternative: mechanical pruner. Preserves reasoning and tool calls
+    // verbatim; only drops image bytes from old messages and reasoning blocks
+    // from old AI turns. Summarizes lazily — only when the pruned history
+    // crosses summarizeAtFraction × maxContextTokens. Mutually exclusive with
+    // 'motion-summary' (both rewrite the head on beforeModel).
+    'gemma-pruner': {
+      llm: { provider: 'ollama', model: 'gemma4:31b' },
+      middleware: ['frontend-images', 'context-pruner'],
+      contextPruner: {
+        maxContextTokens: 30_000,
+        summarizeAtFraction: 0.7,
+        keepLatestImages: 1,
+        imageTokenBudget: 800,
+      },
+    },
   },
 });

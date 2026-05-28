@@ -1,0 +1,409 @@
+import { createMiddleware } from 'langchain';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+  RemoveMessage,
+  isAIMessage,
+  isHumanMessage,
+  isToolMessage,
+  isSystemMessage,
+  type BaseMessage,
+} from '@langchain/core/messages';
+import { REMOVE_ALL_MESSAGES } from '@langchain/langgraph';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { MOTION_TOOL_NAMES } from './robotTools.js';
+
+const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
+const IMAGE_TOOL_NAMES: ReadonlySet<string> = new Set([...MOTION_TOOL_NAMES, 'capture_image']);
+
+// Per-thread guard against re-entrant summarization. beforeModel is async; if a
+// second request lands on the same thread mid-flight the second call awaits the
+// first instead of issuing a duplicate LLM round-trip.
+const inflightSummaries = new Map<string, Promise<string>>();
+
+const DEFAULT_SUMMARY_PROMPT = `You are compressing the early portion of a robot-control conversation so a small local model can stay on task within its context budget. The summary REPLACES the detailed history that came before it, so capture the operator's understanding so far — conclusions, not a play-by-play.
+
+Cover, in a few terse sentences:
+- The user's objective (verbatim if short).
+- What has been learned about the controls in this camera view: which on-screen direction each turn produces (and whether turn_left/turn_right are inverted here), which end is the robot's face, and the rough movement scale.
+- Where the robot currently is and which way it is facing relative to the target.
+- Open questions, obstacles, or sensor caveats (e.g. a flat or thin target the ultrasonic can't see).
+
+Rules:
+- Write conclusions and current state, NOT a list of the commands issued.
+- Do NOT describe raw image content ("the photo shows..."), and do NOT include base64 data or image URLs.
+- Plain text, terse, present tense.`;
+
+export interface ContextPrunerOptions {
+  llm: BaseChatModel;
+  // Override for the summarization system prompt. Falls back to a baked-in
+  // default that mirrors the existing motion-summarization wording.
+  summaryPrompt?: string;
+  // Hard cap on tokens we want the LLM to receive. Default tuned for Gemma 31b.
+  maxContextTokens?: number;
+  // Fraction of maxContextTokens at which we synchronously summarize the head
+  // before letting the next LLM call go through.
+  summarizeAtFraction?: number;
+  // How many of the most-recent image-bearing HumanMessages keep their image
+  // blocks. Older ones become text-only.
+  keepLatestImages?: number;
+  // Flat per-image-block charge used by the token estimator. Approximate;
+  // Ollama's actual image tokenization differs by model.
+  imageTokenBudget?: number;
+}
+
+interface MaybeBlock {
+  type?: string;
+  text?: string;
+}
+
+interface MaybeToolCall {
+  name?: unknown;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Pruning helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// Drop the base64 `data` field from a motion / capture ToolMessage's JSON
+// content. The same image is re-emitted one message later as an `image_url` /
+// `image` block by frontendImageInjectionMiddleware; the bytes inside the
+// ToolMessage are pure dead weight to the model.
+function stripToolMessageImageData(msg: ToolMessage): ToolMessage {
+  if (typeof msg.content !== 'string') return msg;
+  if (!msg.name || !IMAGE_TOOL_NAMES.has(msg.name)) return msg;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(msg.content) as Record<string, unknown>;
+  } catch {
+    return msg;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return msg;
+  if (typeof parsed.data !== 'string' || parsed.data.length === 0) return msg;
+  const { data: _dropped, ...rest } = parsed;
+  void _dropped;
+  const next = { ...rest, dataDropped: true };
+  return new ToolMessage({
+    content: JSON.stringify(next),
+    tool_call_id: msg.tool_call_id,
+    name: msg.name,
+  });
+}
+
+function hasImageBlock(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return (content as MaybeBlock[]).some(
+    (b) => b && (b.type === 'image' || b.type === 'image_url')
+  );
+}
+
+// Strip image blocks out of a HumanMessage's content array, keeping the
+// leading text caption. If nothing useful survives, return a single
+// "[image dropped]" text block so the model still sees the slot.
+function pruneImageBlocksInHumanMessage(msg: HumanMessage): HumanMessage {
+  if (!Array.isArray(msg.content)) return msg;
+  const textOnly = (msg.content as MaybeBlock[]).filter(
+    (b) => b && b.type !== 'image' && b.type !== 'image_url'
+  );
+  if (textOnly.length === msg.content.length) return msg;
+  const newContent =
+    textOnly.length === 0
+      ? ([{ type: 'text', text: '[image dropped]' }] as unknown as HumanMessage['content'])
+      : (textOnly as unknown as HumanMessage['content']);
+  return new HumanMessage({ content: newContent, name: msg.name });
+}
+
+// Clear `additional_kwargs.reasoning_content` (Anthropic extended-thinking,
+// Ollama Qwen3 / deepseek-r1) while preserving every other additional_kwargs
+// key. Returns the same instance when nothing changed.
+function stripReasoningContent(msg: AIMessage): AIMessage {
+  const ak = msg.additional_kwargs as Record<string, unknown> | undefined;
+  if (!ak || ak.reasoning_content == null) return msg;
+  const { reasoning_content: _dropped, ...rest } = ak;
+  void _dropped;
+  return new AIMessage({
+    content: msg.content,
+    tool_calls: msg.tool_calls,
+    name: msg.name,
+    additional_kwargs: rest,
+  });
+}
+
+// Newest-first list of indices of HumanMessages that carry an image block.
+function findImageHumanMessageIndices(messages: BaseMessage[]): number[] {
+  const out: number[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (isHumanMessage(m) && hasImageBlock(m.content)) out.push(i);
+  }
+  return out;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Token estimator (cheap heuristic — no tokenizer dependency)
+// ────────────────────────────────────────────────────────────────────────────
+
+function textTokens(text: string): number {
+  // ~4 chars per token is the canonical rough estimate for English; reasonable
+  // for our prompt style across cl100k/o200k/Gemma's SentencePiece.
+  return Math.ceil(text.length / 4);
+}
+
+function contentTokens(content: BaseMessage['content'], imageBudget: number): number {
+  if (typeof content === 'string') return textTokens(content);
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const block of content as MaybeBlock[]) {
+    if (!block) continue;
+    if (block.type === 'image' || block.type === 'image_url') {
+      total += imageBudget;
+    } else if (typeof block.text === 'string') {
+      total += textTokens(block.text);
+    }
+  }
+  return total;
+}
+
+export function estimateTokens(messages: BaseMessage[], imageBudget: number): number {
+  let total = 0;
+  for (const m of messages) {
+    total += contentTokens(m.content, imageBudget);
+    // Tool calls on AIMessages cost real tokens too — the name + serialized
+    // args are sent verbatim.
+    if (isAIMessage(m)) {
+      const tcs = (m as AIMessage).tool_calls ?? [];
+      for (const tc of tcs) {
+        total += textTokens((tc.name ?? '') + JSON.stringify(tc.args ?? {}));
+      }
+      const reasoning = (m.additional_kwargs as Record<string, unknown> | undefined)
+        ?.reasoning_content;
+      if (typeof reasoning === 'string') total += textTokens(reasoning);
+    }
+    // Per-message envelope overhead (role token, separators) — rough.
+    total += 4;
+  }
+  return total;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Mechanical prune
+// ────────────────────────────────────────────────────────────────────────────
+
+interface PruneStats {
+  toolImageDataStripped: number;
+  humanImagesStripped: number;
+  reasoningStripped: number;
+}
+
+function mechanicalPrune(
+  messages: BaseMessage[],
+  keepLatestImages: number
+): { messages: BaseMessage[]; stats: PruneStats } {
+  const stats: PruneStats = {
+    toolImageDataStripped: 0,
+    humanImagesStripped: 0,
+    reasoningStripped: 0,
+  };
+
+  // Step 1: strip ToolMessage `data` everywhere.
+  let next: BaseMessage[] = messages.map((m) => {
+    if (isToolMessage(m)) {
+      const stripped = stripToolMessageImageData(m);
+      if (stripped !== m) stats.toolImageDataStripped++;
+      return stripped;
+    }
+    return m;
+  });
+
+  // Step 2: keep the latest N image HumanMessages, prune image blocks from the rest.
+  const imageIdxNewestFirst = findImageHumanMessageIndices(next);
+  const toPrune = new Set(imageIdxNewestFirst.slice(Math.max(0, keepLatestImages)));
+  if (toPrune.size > 0) {
+    next = next.map((m, i) => {
+      if (!toPrune.has(i)) return m;
+      if (!isHumanMessage(m)) return m;
+      const pruned = pruneImageBlocksInHumanMessage(m);
+      if (pruned !== m) stats.humanImagesStripped++;
+      return pruned;
+    });
+  }
+
+  // Step 3: strip reasoning_content from every AIMessage except the last one
+  // in the list. The last AI message belongs to the in-flight turn; keeping
+  // its reasoning intact satisfies Anthropic extended-thinking's mid-round
+  // requirement (boundaries between turns are always HumanMessages anyway).
+  let lastAiIdx = -1;
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (isAIMessage(next[i])) {
+      lastAiIdx = i;
+      break;
+    }
+  }
+  next = next.map((m, i) => {
+    if (i === lastAiIdx) return m;
+    if (!isAIMessage(m)) return m;
+    const stripped = stripReasoningContent(m);
+    if (stripped !== m) stats.reasoningStripped++;
+    return stripped;
+  });
+
+  return { messages: next, stats };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Summarization
+// ────────────────────────────────────────────────────────────────────────────
+
+function extractText(content: BaseMessage['content']): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return (content as MaybeBlock[])
+    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join(' ')
+    .trim();
+}
+
+function isMotionToolCall(msg: unknown): boolean {
+  if (!msg || typeof msg !== 'object') return false;
+  const tcs = (msg as { tool_calls?: unknown }).tool_calls;
+  if (!Array.isArray(tcs)) return false;
+  return tcs.some(
+    (tc: MaybeToolCall) => typeof tc?.name === 'string' && MOTION_NAMES.has(tc.name)
+  );
+}
+
+// Final image strip used only on the LLM input we send to the summarizer —
+// even the "latest" frame is irrelevant when summarizing text history.
+function dropAllImageBlocks(msg: BaseMessage): BaseMessage {
+  if (isHumanMessage(msg) && Array.isArray(msg.content)) {
+    return pruneImageBlocksInHumanMessage(msg);
+  }
+  if (isToolMessage(msg)) {
+    return stripToolMessageImageData(msg);
+  }
+  return msg;
+}
+
+async function runSummary(
+  llm: BaseChatModel,
+  summaryPrompt: string,
+  head: BaseMessage[]
+): Promise<string> {
+  const sanitized = head.map(dropAllImageBlocks);
+  const result = await llm.invoke(
+    [
+      new SystemMessage(summaryPrompt),
+      ...sanitized,
+      new HumanMessage('Write the summary now.'),
+    ],
+    { callbacks: [], tags: ['context-pruner-summary'] }
+  );
+  return extractText(result.content);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Middleware
+// ────────────────────────────────────────────────────────────────────────────
+
+export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
+  const summaryPrompt = opts.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
+  const maxContextTokens = opts.maxContextTokens ?? 30_000;
+  const summarizeAtFraction = opts.summarizeAtFraction ?? 0.7;
+  const keepLatestImages = Math.max(0, opts.keepLatestImages ?? 1);
+  const imageTokenBudget = opts.imageTokenBudget ?? 800;
+  const summarizeThreshold = Math.floor(summarizeAtFraction * maxContextTokens);
+
+  return createMiddleware({
+    name: 'context-pruner',
+
+    beforeModel: async (state, runtime) => {
+      const messages = (state.messages || []) as BaseMessage[];
+      if (messages.length === 0) return undefined;
+
+      const threadId = runtime?.configurable?.thread_id ?? '__default__';
+      const beforeTokens = estimateTokens(messages, imageTokenBudget);
+      const { messages: pruned, stats } = mechanicalPrune(messages, keepLatestImages);
+      const afterPruneTokens = estimateTokens(pruned, imageTokenBudget);
+
+      let rebuilt = pruned;
+      let summarized = false;
+      let finalTokens = afterPruneTokens;
+
+      if (afterPruneTokens >= summarizeThreshold) {
+        // Carve out the head slice — everything from the first HumanMessage
+        // through the message just before the most recent motion ToolMessage's
+        // assistant call. The tail (latest motion AIMessage → ToolMessage →
+        // injected composite, plus anything newer) survives verbatim.
+        const firstHumanIdx = pruned.findIndex((m) => isHumanMessage(m));
+        let lastMotionAiIdx = -1;
+        for (let i = pruned.length - 1; i >= 0; i--) {
+          if (isMotionToolCall(pruned[i])) {
+            lastMotionAiIdx = i;
+            break;
+          }
+        }
+
+        if (firstHumanIdx >= 0 && lastMotionAiIdx > firstHumanIdx + 1) {
+          const headSlice = pruned.slice(firstHumanIdx + 1, lastMotionAiIdx);
+          const tail = pruned.slice(lastMotionAiIdx);
+          const firstHuman = pruned[firstHumanIdx];
+
+          // Deduplicate concurrent in-flight summaries per thread.
+          let promise = inflightSummaries.get(threadId);
+          if (!promise) {
+            promise = runSummary(opts.llm, summaryPrompt, [firstHuman, ...headSlice]);
+            inflightSummaries.set(threadId, promise);
+          }
+          let summaryText = '';
+          try {
+            summaryText = await promise;
+          } catch (err) {
+            console.error('[context-pruner] summary call failed:', err);
+          } finally {
+            inflightSummaries.delete(threadId);
+          }
+
+          if (summaryText) {
+            const summaryMsg = new SystemMessage(
+              `Summary of prior steps:\n${summaryText}`
+            );
+            rebuilt = [
+              ...pruned.slice(0, firstHumanIdx + 1),
+              summaryMsg,
+              ...tail,
+            ];
+            summarized = true;
+            finalTokens = estimateTokens(rebuilt, imageTokenBudget);
+          }
+        }
+      }
+
+      const nothingChanged =
+        stats.toolImageDataStripped === 0 &&
+        stats.humanImagesStripped === 0 &&
+        stats.reasoningStripped === 0 &&
+        !summarized;
+      if (nothingChanged) return undefined;
+
+      console.log(
+        `[context-pruner] thread=${threadId} ` +
+          `tokens ${beforeTokens}→${finalTokens} (cap ${maxContextTokens}, ` +
+          `summarize@${summarizeThreshold}) ` +
+          `tool-data:${stats.toolImageDataStripped} ` +
+          `human-images:${stats.humanImagesStripped} ` +
+          `reasoning:${stats.reasoningStripped} ` +
+          `summarized:${summarized}`
+      );
+
+      return {
+        messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), ...rebuilt],
+      };
+    },
+  });
+}
+
+// Exposed for tests; do not call from app code.
+export const __inflightSummariesForTest = inflightSummaries;

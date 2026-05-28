@@ -6,6 +6,7 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { captureImageTool } from '../src/agent/captureImageTool.js';
 import { createFrontendImageInjectionMiddleware } from '../src/agent/frontendImageInjectionMiddleware.js';
 import { createMotionSummarizationMiddleware } from '../src/agent/motionSummarizationMiddleware.js';
+import { createContextPrunerMiddleware } from '../src/agent/contextPrunerMiddleware.js';
 import { createObservabilityMiddleware } from './observabilityMiddleware.js';
 import { createRobotTools } from '../src/agent/robotTools.js';
 import { loadConfig } from './loadConfig.js';
@@ -52,6 +53,20 @@ function buildMiddleware(entries: MiddlewareEntry[] | undefined, llm: BaseChatMo
             profile.summaryPromptPath ?? DEFAULT_SUMMARY_PROMPT_FILE
           );
           built.push(createMotionSummarizationMiddleware({ llm, summaryPrompt }));
+          enabled.push(entry);
+          break;
+        }
+        case 'context-pruner': {
+          const summaryPrompt = readPromptFileOrUndefined(
+            profile.summaryPromptPath ?? DEFAULT_SUMMARY_PROMPT_FILE
+          );
+          built.push(
+            createContextPrunerMiddleware({
+              llm,
+              summaryPrompt,
+              ...(profile.contextPruner ?? {}),
+            })
+          );
           enabled.push(entry);
           break;
         }
