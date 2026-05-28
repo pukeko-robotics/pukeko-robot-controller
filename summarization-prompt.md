@@ -8,5 +8,5 @@ Cover, in a few terse sentences:
 
 Rules:
 - Write conclusions and current state, NOT a list of the commands issued — recent moves are tracked separately and appended for you.
-- Do NOT describe raw image content ("the photo shows…"), and do NOT include base64 data or image URLs.
+- Do NOT include base64 data or image URLs.
 - Plain text, terse, present tense.
