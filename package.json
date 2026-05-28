@@ -11,6 +11,7 @@
     "dev:ag-ui": "AGUI_URL=http://localhost:3000/agents/default/run vite",
     "server": "node --import=tsx ./server/index.ts",
     "stub": "node --import=tsx robot-stub/index.ts",
+    "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"npm:server\" \"npm:dev\"",
     "test": "vitest run",
     "build": "vue-tsc --build && vite build",
     "type-check": "vue-tsc --build"
@@ -40,6 +41,7 @@
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.7.0",
+    "concurrently": "^9.2.1",
     "jsdom": "^26.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
