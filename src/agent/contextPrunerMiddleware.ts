@@ -86,6 +86,7 @@ function stripToolMessageImageData(msg: ToolMessage): ToolMessage {
   void _dropped;
   const next = { ...rest, dataDropped: true };
   return new ToolMessage({
+    id: msg.id,
     content: JSON.stringify(next),
     tool_call_id: msg.tool_call_id,
     name: msg.name,
@@ -112,7 +113,7 @@ function pruneImageBlocksInHumanMessage(msg: HumanMessage): HumanMessage {
     textOnly.length === 0
       ? ([{ type: 'text', text: '[image dropped]' }] as unknown as HumanMessage['content'])
       : (textOnly as unknown as HumanMessage['content']);
-  return new HumanMessage({ content: newContent, name: msg.name });
+  return new HumanMessage({ id: msg.id, content: newContent, name: msg.name });
 }
 
 // Clear `additional_kwargs.reasoning_content` (Anthropic extended-thinking,
@@ -124,6 +125,7 @@ function stripReasoningContent(msg: AIMessage): AIMessage {
   const { reasoning_content: _dropped, ...rest } = ak;
   void _dropped;
   return new AIMessage({
+    id: msg.id,
     content: msg.content,
     tool_calls: msg.tool_calls,
     name: msg.name,

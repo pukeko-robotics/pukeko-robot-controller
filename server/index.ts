@@ -7,6 +7,7 @@ import { captureImageTool } from '../src/agent/captureImageTool.js';
 import { createFrontendImageInjectionMiddleware } from '../src/agent/frontendImageInjectionMiddleware.js';
 import { createMotionSummarizationMiddleware } from '../src/agent/motionSummarizationMiddleware.js';
 import { createContextPrunerMiddleware } from '../src/agent/contextPrunerMiddleware.js';
+import { createLazyToolRecoveryMiddleware } from '../src/agent/lazyToolRecoveryMiddleware.js';
 import { createObservabilityMiddleware } from './observabilityMiddleware.js';
 import { createRobotTools } from '../src/agent/robotTools.js';
 import { loadConfig } from './loadConfig.js';
@@ -70,6 +71,10 @@ function buildMiddleware(entries: MiddlewareEntry[] | undefined, llm: BaseChatMo
           enabled.push(entry);
           break;
         }
+        case 'lazy-tool-recovery':
+          built.push(createLazyToolRecoveryMiddleware(profile.lazyToolRecovery ?? {}));
+          enabled.push(entry);
+          break;
         case 'observability': {
           const obs = profile.observability;
           if (!obs?.verbose) {

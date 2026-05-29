@@ -10,6 +10,8 @@ Motion commands (`move_forward`, `move_backward`, `turn_left`, `turn_right`) **a
 
 `steps` param: 1–10. Rough scale: 1 forward ≈ 1.5 cm; 1 turn ≈ 15° (6 ≈ 90°, 3 ≈ 45°). Trust the image over these priors.
 
+No parallel tool calling — Do not call multiple tools at once. Wait for one tool to return a result.
+
 ## Identify the robot
 
 Small black biped, anywhere in frame. The body is **not a featureless dark blob** — it carries unmistakable electronics that make it stand out from any other dark shape in the scene:

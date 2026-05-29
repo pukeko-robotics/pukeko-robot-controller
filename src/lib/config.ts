@@ -16,6 +16,7 @@ export type BuiltinMiddlewareId =
   | 'frontend-images'
   | 'motion-summary'
   | 'context-pruner'
+  | 'lazy-tool-recovery'
   | 'observability';
 
 // Arbitrary middleware object the user can pass in from a .ts/.js config.
@@ -41,6 +42,11 @@ export interface ContextPrunerProfileOpts {
   imageTokenBudget?: number;
 }
 
+export interface LazyToolRecoveryProfileOpts {
+  maxRecoveries?: number;
+  skipClassifier?: boolean;
+}
+
 export interface PukekoProfile {
   llm: LlmSpec;
   // Path to the agent's behavioural system prompt, resolved from the project
@@ -55,6 +61,7 @@ export interface PukekoProfile {
   observability?: ObservabilityOptions;
   robot?: RobotOptions;
   contextPruner?: ContextPrunerProfileOpts;
+  lazyToolRecovery?: LazyToolRecoveryProfileOpts;
 }
 
 export interface PukekoConfig {

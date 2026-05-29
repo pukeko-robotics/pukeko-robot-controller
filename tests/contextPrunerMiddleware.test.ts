@@ -184,6 +184,44 @@ describe('contextPrunerMiddleware — mechanical prune', () => {
     expect(out2.additional_kwargs?.reasoning_content).toBe('LATEST reasoning')
   })
 
+  it('preserves message ids on rewritten messages', async () => {
+    // Rewritten messages MUST keep their original id. Otherwise the
+    // add_messages reducer (after RemoveMessage(REMOVE_ALL)) assigns fresh
+    // UUIDs every turn, breaking client-side dedup-by-id and causing the
+    // AG-UI client to render the same tool call twice.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const userMsg = new HumanMessage({ id: 'h-user', content: 'go' })
+    const motionAi = new AIMessage({
+      id: 'ai-motion',
+      content: '',
+      tool_calls: [{ name: 'turn_right', args: { steps: 1 }, id: 'tc-1' }],
+      additional_kwargs: { reasoning_content: 'stale reasoning' },
+    })
+    const motionTool = new ToolMessage({
+      id: 'tool-motion',
+      content: motionResultJson('turn_right (steps=1)'),
+      tool_call_id: 'tc-1',
+      name: 'turn_right',
+    })
+    const oldImg = new HumanMessage({
+      id: 'h-img-old',
+      content: [{ type: 'text', text: 'Old frame' }, imageBlock()],
+    })
+    const lastAi = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before(
+      { messages: [userMsg, motionAi, motionTool, oldImg, lastAi] },
+      runtime
+    )
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const ids = updated.filter((m) => !(m instanceof RemoveMessage)).map((m) => m.id)
+    // Every rewritten message retains its original id; none are undefined.
+    expect(ids).toEqual(['h-user', 'ai-motion', 'tool-motion', 'h-img-old', 'ai-last'])
+  })
+
   it('returns undefined when there is nothing to prune and nothing to summarize', async () => {
     const llm = makeStubLlm()
     const mw = createContextPrunerMiddleware({ llm }) as HookContainer

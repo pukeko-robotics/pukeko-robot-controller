@@ -40,5 +40,22 @@ export default defineConfig({
         imageTokenBudget: 800,
       },
     },
+
+    // Adds lazy-tool-recovery: small local models often narrate a tool ("I'll
+    // call `read_distance` next.") and end the turn without emitting the call,
+    // stalling the run. This middleware wraps the model call; on a no-tool reply
+    // that names a tool, it runs a cheap isolated classifier ("did you mean to
+    // call a tool?") and, if so, re-prompts so the tool call streams for real.
+    // Set skipClassifier: true to recover on any tool-name mention without the
+    // extra classifier round-trip (cheaper, blunter).
+    'gemma-anti-lazy': {
+      llm: { provider: 'ollama', model: 'gemma4:31b' },
+      middleware: ['frontend-images', 'context-pruner', 'lazy-tool-recovery'],
+      contextPruner: { maxContextTokens: 30_000 },
+      lazyToolRecovery: {
+        maxRecoveries: 1,
+        skipClassifier: false,
+      },
+    },
   },
 });
