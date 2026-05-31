@@ -2,7 +2,6 @@
 import { onMounted, ref } from 'vue'
 import {
   ChatInterface,
-  PkButton,
   PkLogo,
   PkNavHeader,
   PkWebcamPanel,
@@ -10,7 +9,6 @@ import {
 import type { Tool } from '@ag-ui/client'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
-const chatInterfaceRef = ref<InstanceType<typeof ChatInterface> | null>(null)
 
 const ROBOT_HOST = import.meta.env.VITE_ROBOT_HOST ?? '192.168.4.1'
 
@@ -167,18 +165,6 @@ const clientToolHandlers = {
   turn_right: (args: unknown) => runMotion('turn_right', '/turn_right', args),
 }
 
-function emergencyStop() {
-  // Halt the agent itself — the real runaway risk. This aborts any in-flight
-  // model stream and blocks the tool loop from resuming, so no further motion
-  // commands are issued. (The robot firmware can't interrupt a motion mid-cycle
-  // anyway, so poking it is pointless; stopping the agent is what matters.)
-  chatInterfaceRef.value?.stop()
-}
-
-function startNewConversation() {
-  chatInterfaceRef.value?.clearHistory()
-}
-
 // Provider/model label shown in the nav header, fetched live from the AG-UI
 // server's /info endpoint so it always reflects the running profile (including
 // env overrides), rather than a duplicated build-time constant.
@@ -215,8 +201,6 @@ onMounted(loadAgentInfo)
       </template>
       <template #nav-controls>
         <span v-if="agentLabel" class="agent-label">Model: {{ agentLabel }}</span>
-        <PkButton class="header-action" @click="startNewConversation">New conversation</PkButton>
-        <PkButton class="header-action stop" @click="emergencyStop">Emergency stop</PkButton>
       </template>
     </PkNavHeader>
     <main class="robot-panels">
@@ -226,7 +210,6 @@ onMounted(loadAgentInfo)
       </section>
       <section class="panel chat-section">
         <ChatInterface
-          ref="chatInterfaceRef"
           :clientTools="clientTools"
           :clientToolHandlers="clientToolHandlers"
         />
@@ -261,16 +244,6 @@ onMounted(loadAgentInfo)
   opacity: 0.85;
 }
 
-.header-action.stop :deep(button) {
-  background: linear-gradient(#d32f2f, #b71c1c);
-  color: #fff;
-  border-color: #b71c1c;
-}
-
-.header-action.stop:hover :deep(button) {
-  background: linear-gradient(#e53935, #c62828);
-}
-
 .robot-panels {
   flex: 1;
   display: flex;
@@ -296,9 +269,5 @@ onMounted(loadAgentInfo)
   font-size: 0.9rem;
   font-weight: 600;
   border-bottom: var(--line-separator-subtle);
-}
-
-.stop {
-  background: salmon;
 }
 </style>
