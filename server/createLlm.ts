@@ -1,7 +1,19 @@
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatOllama } from '@langchain/ollama';
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatOpenRouter } from '@langchain/openrouter';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { LlmProvider, LlmSpec } from '../src/lib/config.js';
+
+// Client-fulfilled tools (capture_image, motions) trigger a langgraph
+// interrupt(). When the model batches several tool calls into one assistant
+// message, the interrupt fires mid-batch and the history ends up with a
+// tool_use that has no immediately-following tool_result — which the
+// tool-calling providers reject on the next turn. Disabling parallel tool
+// use keeps it to one tool call per assistant turn. (Anthropic exposes this
+// via invocationKwargs.tool_choice; the OpenAI-shaped providers take it as a
+// request-body param via modelKwargs.)
+const NO_PARALLEL_TOOLS = { parallel_tool_calls: false } as const;
 
 export type { LlmProvider, LlmSpec };
 
@@ -24,12 +36,8 @@ export function createLlm(spec: LlmSpec): LlmSelection {
   if (spec.provider === 'anthropic') {
     return {
       provider: 'anthropic',
-      // disable_parallel_tool_use: client-fulfilled tools (capture_image)
-      // trigger langgraph interrupt(). When the model batches two tool calls
-      // in one assistant message — e.g. read_status + capture_image — the
-      // interrupt fires mid-batch and the message history ends up with one
-      // tool_use that has no immediately-following tool_result, which
-      // Anthropic rejects on the next turn.
+      // See NO_PARALLEL_TOOLS — Anthropic spells the same control as
+      // disable_parallel_tool_use on tool_choice.
       llm: new ChatAnthropic({
         model: spec.model,
         invocationKwargs: {
@@ -39,5 +47,33 @@ export function createLlm(spec: LlmSpec): LlmSelection {
     };
   }
 
-  throw new Error(`Unknown LLM provider: ${spec.provider}. Expected 'ollama' or 'anthropic'.`);
+  if (spec.provider === 'openai') {
+    return {
+      provider: 'openai',
+      // apiKey falls back to OPENAI_API_KEY; baseUrl (if set) lets users point
+      // at an OpenAI-compatible endpoint.
+      llm: new ChatOpenAI({
+        model: spec.model,
+        modelKwargs: NO_PARALLEL_TOOLS,
+        ...(spec.baseUrl ? { configuration: { baseURL: spec.baseUrl } } : {}),
+      }),
+    };
+  }
+
+  if (spec.provider === 'openrouter') {
+    return {
+      provider: 'openrouter',
+      // apiKey falls back to OPENROUTER_API_KEY; baseUrl overrides the default
+      // https://openrouter.ai/api/v1.
+      llm: new ChatOpenRouter({
+        model: spec.model,
+        modelKwargs: NO_PARALLEL_TOOLS,
+        ...(spec.baseUrl ? { baseURL: spec.baseUrl } : {}),
+      }),
+    };
+  }
+
+  throw new Error(
+    `Unknown LLM provider: ${spec.provider}. Expected 'ollama', 'anthropic', 'openai', or 'openrouter'.`
+  );
 }

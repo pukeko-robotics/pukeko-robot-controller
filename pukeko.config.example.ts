@@ -20,6 +20,17 @@ export default defineConfig({
       observability: { verbose: true, dumpDir: './logs', dumpImages: true },
     },
 
+    'gpt-5.5': {
+      llm: { provider: 'openai', model: 'gpt-5.5' },
+      middleware: ['frontend-images', 'context-pruner'],
+      contextPruner: {
+        maxContextTokens: 130_000,
+        summarizeAtFraction: 0.7,
+        keepLatestImages: 1,
+        imageTokenBudget: 800,
+      },
+    },
+
     anthropic: {
       llm: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
       middleware: ['frontend-images', 'motion-summary'],

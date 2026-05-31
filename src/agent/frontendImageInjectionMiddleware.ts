@@ -2,6 +2,7 @@ import { createMiddleware } from 'langchain';
 import { ToolMessage, HumanMessage } from '@langchain/core/messages';
 import type { MessageContent } from '@langchain/core/messages';
 import { MOTION_TOOL_NAMES } from './robotTools.js';
+import type { LlmProvider } from "../lib/config.js";
 
 interface ImagePayload {
   mimeType?: string;
@@ -25,7 +26,7 @@ export interface ImageInjectionOptions {
   // ChatOllama only accepts {type:'image_url', image_url: <data-URL>} blocks;
   // ChatAnthropic accepts the LangChain standard {type:'image', source_type, ...}
   // block. Pick the right shape per provider.
-  provider: 'ollama' | 'anthropic';
+  provider: LlmProvider;
 }
 
 export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptions) {

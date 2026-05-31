@@ -69,6 +69,12 @@ function applyEnvOverrides(profile: PukekoProfile): PukekoProfile {
     if (process.env.OLLAMA_BASE_URL) next.llm.baseUrl = process.env.OLLAMA_BASE_URL;
   } else if (next.llm.provider === 'anthropic') {
     if (process.env.ANTHROPIC_MODEL) next.llm.model = process.env.ANTHROPIC_MODEL;
+  } else if (next.llm.provider === 'openai') {
+    if (process.env.OPENAI_MODEL) next.llm.model = process.env.OPENAI_MODEL;
+    if (process.env.OPENAI_BASE_URL) next.llm.baseUrl = process.env.OPENAI_BASE_URL;
+  } else if (next.llm.provider === 'openrouter') {
+    if (process.env.OPENROUTER_MODEL) next.llm.model = process.env.OPENROUTER_MODEL;
+    if (process.env.OPENROUTER_BASE_URL) next.llm.baseUrl = process.env.OPENROUTER_BASE_URL;
   }
   if (process.env.ROBOT_HOST) {
     next.robot = { ...(next.robot ?? {}), host: process.env.ROBOT_HOST };
