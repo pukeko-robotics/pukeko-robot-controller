@@ -13,7 +13,14 @@ import type { LlmProvider, LlmSpec } from '../src/lib/config.js';
 // use keeps it to one tool call per assistant turn. (Anthropic exposes this
 // via invocationKwargs.tool_choice; the OpenAI-shaped providers take it as a
 // request-body param via modelKwargs.)
-const NO_PARALLEL_TOOLS = { parallel_tool_calls: false } as const;
+//
+// We also FORCE a tool call every turn (tool_choice "required"/"any"). The loop
+// always ends through the `finish_task` tool, so the model never needs to
+// terminate by emitting a no-tool reply — forcing a tool makes the
+// "narrate-but-don't-call" stall structurally impossible. NOTE: ChatOllama does
+// NOT support tool_choice (`tool_choice?: never`), so the Ollama/Gemma path
+// can't be forced — that path still relies on lazy-tool-recovery as the net.
+const NO_PARALLEL_TOOLS = { parallel_tool_calls: false, tool_choice: 'required' } as const;
 
 export type { LlmProvider, LlmSpec };
 
@@ -36,12 +43,13 @@ export function createLlm(spec: LlmSpec): LlmSelection {
   if (spec.provider === 'anthropic') {
     return {
       provider: 'anthropic',
-      // See NO_PARALLEL_TOOLS — Anthropic spells the same control as
-      // disable_parallel_tool_use on tool_choice.
+      // See NO_PARALLEL_TOOLS — Anthropic spells both controls on tool_choice:
+      // type "any" forces a tool every turn; disable_parallel_tool_use keeps it
+      // to one call.
       llm: new ChatAnthropic({
         model: spec.model,
         invocationKwargs: {
-          tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+          tool_choice: { type: 'any', disable_parallel_tool_use: true },
         },
       }),
     };

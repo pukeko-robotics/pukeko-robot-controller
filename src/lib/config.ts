@@ -45,6 +45,10 @@ export interface ContextPrunerProfileOpts {
 export interface LazyToolRecoveryProfileOpts {
   maxRecoveries?: number;
   skipClassifier?: boolean;
+  // Re-prompt on ANY no-tool reply (not just ones that name a tool). The
+  // model must call some tool every turn — a real action or finish_task to end.
+  // The Ollama-path equivalent of forcing tool_choice. Default false.
+  force?: boolean;
 }
 
 export interface PukekoProfile {

@@ -162,4 +162,68 @@ describe('lazyToolRecoveryMiddleware', () => {
     expect(handler).toHaveBeenCalledTimes(2) // initial + one recovery, then stop
     expect((out as AIMessage).tool_calls?.length ?? 0).toBe(0)
   })
+
+  describe('force mode', () => {
+    it('recovers a no-tool reply that names NO tool (no classifier)', async () => {
+      const model = classifierModel('NO')
+      const mw = createLazyToolRecoveryMiddleware({ force: true }) as HookContainer
+      const wrap = getWrapModelCall(mw.wrapModelCall)
+
+      const handler = vi
+        .fn()
+        .mockResolvedValueOnce(lazyReply('The robot looks centred and the task seems complete.'))
+        .mockResolvedValueOnce(toolReply())
+      const out = await wrap(makeRequest(model), handler)
+
+      expect(model.invoke).not.toHaveBeenCalled() // force skips the classifier
+      expect(handler).toHaveBeenCalledTimes(2)
+      expect((out as AIMessage).tool_calls?.[0].name).toBe('read_distance')
+
+      const nudge = (handler.mock.calls[1][0] as { messages: BaseMessage[] }).messages.at(-1)
+      expect(nudge).toBeInstanceOf(HumanMessage)
+      expect((nudge as HumanMessage).content).toContain('finish_task')
+    })
+
+    it('recovers an empty no-tool reply', async () => {
+      const model = classifierModel('NO')
+      const mw = createLazyToolRecoveryMiddleware({ force: true }) as HookContainer
+      const wrap = getWrapModelCall(mw.wrapModelCall)
+
+      const handler = vi
+        .fn()
+        .mockResolvedValueOnce(lazyReply(''))
+        .mockResolvedValueOnce(toolReply())
+      const out = await wrap(makeRequest(model), handler)
+
+      expect(handler).toHaveBeenCalledTimes(2)
+      expect((out as AIMessage).tool_calls?.[0].name).toBe('read_distance')
+    })
+
+    it('still leaves a truncated (done_reason=length) reply alone', async () => {
+      const model = classifierModel('NO')
+      const mw = createLazyToolRecoveryMiddleware({ force: true }) as HookContainer
+      const wrap = getWrapModelCall(mw.wrapModelCall)
+
+      const handler = vi.fn(async () =>
+        lazyReply('cut off mid-thou', { response_metadata: { done_reason: 'length' } })
+      )
+      const out = await wrap(makeRequest(model), handler)
+
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect((out as AIMessage).response_metadata?.done_reason).toBe('length')
+    })
+
+    it('defaults to two attempts in force mode', async () => {
+      const model = classifierModel('NO')
+      const mw = createLazyToolRecoveryMiddleware({ force: true }) as HookContainer
+      const wrap = getWrapModelCall(mw.wrapModelCall)
+
+      // Every reply is no-tool prose; force retries twice (initial + 2).
+      const handler = vi.fn(async () => lazyReply('still just talking, no tool'))
+      const out = await wrap(makeRequest(model), handler)
+
+      expect(handler).toHaveBeenCalledTimes(3) // initial + 2 recoveries
+      expect((out as AIMessage).tool_calls?.length ?? 0).toBe(0)
+    })
+  })
 })

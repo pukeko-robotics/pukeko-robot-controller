@@ -13,9 +13,12 @@ import {
 } from '@langchain/core/messages';
 import { REMOVE_ALL_MESSAGES } from '@langchain/langgraph';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { MOTION_TOOL_NAMES } from './robotTools.js';
-
-const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
+import {
+  formatPinnedState,
+  isMotionToolCall,
+  observeAssistantMessage,
+  __motionLogForTest,
+} from './motionLog.js';
 
 // thread_id → in-flight summary Promise. afterModel kicks off the summary call
 // the moment the assistant decides to move; beforeModel on the next turn awaits
@@ -23,17 +26,6 @@ const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
 // the slow browser round-trip (capture → move → capture → compose), giving the
 // summarization wall-clock parallelism with the motion itself.
 const pendingSummaries = new Map<string, Promise<string>>();
-
-// thread_id → ordered list of motions issued, newest last. Appended to the
-// summary verbatim so the recent-move history is deterministic (immune to LLM
-// summary drift). The newest entry is the in-flight motion — marked pending
-// until the next turn observes its result.
-interface MotionEntry {
-  label: string;
-  pending: boolean;
-}
-const motionLogByThread = new Map<string, MotionEntry[]>();
-const MAX_MOTION_LOG = 5;
 
 // Baked-in fallback. Kept identical to `summarization-prompt.md` at the repo
 // root, which the server loads and passes in via `summaryPrompt`. This copy is
@@ -50,61 +42,6 @@ Rules:
 - Write conclusions and current state, NOT a list of the commands issued — recent moves are tracked separately and appended for you.
 - Do NOT describe raw image content ("the photo shows..."), and do NOT include base64 data or image URLs.
 - Plain text, terse, present tense.`;
-
-interface MaybeToolCall {
-  name?: unknown;
-  args?: unknown;
-}
-
-// Human-readable label for the motion a message just issued, e.g.
-// "turn_right (steps=3)". Returns null when the message has no motion call.
-function motionLabel(msg: unknown): string | null {
-  if (!msg || typeof msg !== 'object') return null;
-  const tcs = (msg as { tool_calls?: unknown }).tool_calls;
-  if (!Array.isArray(tcs)) return null;
-  for (const tc of tcs as MaybeToolCall[]) {
-    if (typeof tc?.name === 'string' && MOTION_NAMES.has(tc.name)) {
-      const rawSteps = (tc.args as { steps?: unknown } | undefined)?.steps;
-      const n =
-        typeof rawSteps === 'number' && Number.isFinite(rawSteps) && rawSteps >= 1
-          ? Math.floor(rawSteps)
-          : 1;
-      return n > 1 ? `${tc.name} (steps=${n})` : tc.name;
-    }
-  }
-  return null;
-}
-
-// Record a freshly-issued motion: the previously pending one is now resolved
-// (its result was observed last turn), and this one becomes the new pending.
-function recordMotion(threadId: string, label: string): void {
-  const log = motionLogByThread.get(threadId) ?? [];
-  for (const e of log) e.pending = false;
-  log.push({ label, pending: true });
-  while (log.length > MAX_MOTION_LOG) log.shift();
-  motionLogByThread.set(threadId, log);
-}
-
-function formatMotionLog(threadId: string): string {
-  const log = motionLogByThread.get(threadId);
-  if (!log || log.length === 0) return '';
-  const lines = log.map(
-    (e) =>
-      `- ${e.label}${e.pending ? ' (pending — its result is the latest Before/After frame below)' : ''}`
-  );
-  return `Recent motions (newest last):\n${lines.join('\n')}`;
-}
-
-function isMotionToolCall(msg: unknown): boolean {
-  if (!msg || typeof msg !== 'object') return false;
-  // Be permissive: state.messages entries may be serialized plain objects
-  // depending on how LangGraph round-trips them between hooks.
-  const tcs = (msg as { tool_calls?: unknown }).tool_calls;
-  if (!Array.isArray(tcs)) return false;
-  return tcs.some(
-    (tc: MaybeToolCall) => typeof tc?.name === 'string' && MOTION_NAMES.has(tc.name)
-  );
-}
 
 interface MaybeBlock {
   type?: string;
@@ -165,13 +102,16 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
       const messages = (state.messages || []) as BaseMessage[];
       if (messages.length === 0) return undefined;
       const last = messages[messages.length - 1];
-      if (!isMotionToolCall(last)) return undefined;
 
       const threadId = runtime?.configurable?.thread_id ?? '__default__';
-      // Log the motion for the deterministic recent-moves list — always, even
-      // when a summary is already in flight (the guard below only skips the
-      // expensive LLM call, not the bookkeeping).
-      recordMotion(threadId, motionLabel(last) ?? 'motion');
+      // Durable per-thread bookkeeping (recent-motion log, give-up gate, pinned
+      // calibration) — every assistant turn, even when a summary is already in
+      // flight (the guard below only skips the expensive LLM call).
+      observeAssistantMessage(threadId, last);
+
+      // Summarization only fires after a motion: its slow browser round-trip is
+      // the wall-clock cover for the summary call.
+      if (!isMotionToolCall(last)) return undefined;
       if (pendingSummaries.has(threadId)) return undefined;
 
       const sanitized = messages.map(stripImageBlocks);
@@ -223,9 +163,9 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
 
       const head = messages.slice(0, firstHumanIdx + 1);
       const tail = messages.slice(lastMotionIdx);
-      const motionList = formatMotionLog(threadId);
-      const summaryBody = motionList
-        ? `Summary of prior steps:\n${summary}\n\n${motionList}`
+      const pinned = formatPinnedState(threadId);
+      const summaryBody = pinned
+        ? `Summary of prior steps:\n${summary}\n\n${pinned}`
         : `Summary of prior steps:\n${summary}`;
       const replaced: BaseMessage[] = [
         ...head,
@@ -243,6 +183,7 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
   });
 }
 
-// Exposed for tests; do not call from app code.
+// Exposed for tests; do not call from app code. The motion log itself now lives
+// in ./motionLog — re-exported here so existing tests keep their import path.
 export const __pendingSummariesForTest = pendingSummaries;
-export const __motionLogForTest = motionLogByThread;
+export { __motionLogForTest };

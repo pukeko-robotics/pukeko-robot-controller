@@ -1,7 +1,7 @@
 import { createMiddleware } from 'langchain';
 import { ToolMessage, HumanMessage } from '@langchain/core/messages';
 import type { MessageContent } from '@langchain/core/messages';
-import { MOTION_TOOL_NAMES } from './robotTools.js';
+import { MOTION_TOOL_NAMES } from './robotToolNames.js';
 import type { LlmProvider } from "../lib/config.js";
 
 interface ImagePayload {

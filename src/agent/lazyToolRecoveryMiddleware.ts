@@ -38,6 +38,13 @@ export interface LazyToolRecoveryOptions {
   // re-prompt on a reply that merely refers to a tool while reporting to the
   // user. Default false.
   skipClassifier?: boolean;
+  // Harshest mode: re-prompt on ANY no-tool reply, even one that doesn't mention
+  // a tool and even an empty one. This is the Ollama-path equivalent of forcing
+  // tool_choice (which ChatOllama can't do) — it leans on `finish_task` as the
+  // always-available "I'm done" tool, so "no tool call" is never a valid way to
+  // end. Implies skipClassifier (no classifier round-trip). Truncation
+  // (done_reason: 'length') is still left alone. Default false.
+  force?: boolean;
 }
 
 // Loosely-typed view of the bits of ModelRequest we touch. The langchain
@@ -126,8 +133,12 @@ async function classifyIntendedTool(
 }
 
 export function createLazyToolRecoveryMiddleware(opts: LazyToolRecoveryOptions = {}) {
-  const maxRecoveries = Math.max(0, opts.maxRecoveries ?? 1);
-  const skipClassifier = opts.skipClassifier ?? false;
+  const force = opts.force ?? false;
+  // force is harsher, so it gets a couple of attempts by default; callers can
+  // still override. force also implies skipping the classifier — in force mode
+  // we re-prompt on any no-tool reply, so there's nothing for it to gate.
+  const maxRecoveries = Math.max(0, opts.maxRecoveries ?? (force ? 2 : 1));
+  const skipClassifier = force || (opts.skipClassifier ?? false);
 
   return createMiddleware({
     name: 'lazy-tool-recovery',
@@ -146,12 +157,32 @@ export function createLazyToolRecoveryMiddleware(opts: LazyToolRecoveryOptions =
           ?.done_reason;
 
         // Truncation, not laziness — the model ran into its output cap mid-thought.
+        // Respected even in force mode: re-prompting a cut-off thought is wrong.
         if (doneReason === 'length') {
           console.warn(
             '[lazy-tool-recovery] model output truncated (done_reason=length); ' +
               'not a laziness stop — leaving the turn as-is.'
           );
           return result;
+        }
+
+        // Harshest mode: any no-tool reply (even empty, even one that names no
+        // tool) is recovered. The model must call SOME tool every turn — a real
+        // action, or finish_task to end. No mention/classifier gates.
+        if (force) {
+          console.warn(
+            `[lazy-tool-recovery] no tool call (force mode); ` +
+              `re-prompting (attempt ${attempt + 1}/${maxRecoveries}).`
+          );
+          const nudge = new HumanMessage(
+            'You ended your turn without calling a tool. You must call exactly one tool ' +
+              'every turn: perform the next action, or call `finish_task` to end the task ' +
+              '(status success / failed / need_input). Emit the tool call now — do not reply ' +
+              'with prose only.'
+          );
+          messages = [...messages, result, nudge];
+          result = (await handler({ ...request, messages })) as AIMessage;
+          continue;
         }
 
         if (!text) return result; // empty + no tool call — genuinely nothing.

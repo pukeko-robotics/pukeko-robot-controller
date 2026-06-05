@@ -13,9 +13,13 @@ import {
 } from '@langchain/core/messages';
 import { REMOVE_ALL_MESSAGES } from '@langchain/langgraph';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { MOTION_TOOL_NAMES } from './robotTools.js';
+import { MOTION_TOOL_NAMES } from './robotToolNames.js';
+import {
+  formatPinnedState,
+  isMotionToolCall,
+  observeAssistantMessage,
+} from './motionLog.js';
 
-const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
 const IMAGE_TOOL_NAMES: ReadonlySet<string> = new Set([...MOTION_TOOL_NAMES, 'capture_image']);
 
 // Per-thread guard against re-entrant summarization. beforeModel is async; if a
@@ -57,10 +61,6 @@ export interface ContextPrunerOptions {
 interface MaybeBlock {
   type?: string;
   text?: string;
-}
-
-interface MaybeToolCall {
-  name?: unknown;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -268,15 +268,6 @@ function extractText(content: BaseMessage['content']): string {
     .trim();
 }
 
-function isMotionToolCall(msg: unknown): boolean {
-  if (!msg || typeof msg !== 'object') return false;
-  const tcs = (msg as { tool_calls?: unknown }).tool_calls;
-  if (!Array.isArray(tcs)) return false;
-  return tcs.some(
-    (tc: MaybeToolCall) => typeof tc?.name === 'string' && MOTION_NAMES.has(tc.name)
-  );
-}
-
 // Final image strip used only on the LLM input we send to the summarizer —
 // even the "latest" frame is irrelevant when summarizing text history.
 function dropAllImageBlocks(msg: BaseMessage): BaseMessage {
@@ -320,6 +311,18 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
 
   return createMiddleware({
     name: 'context-pruner',
+
+    // Record durable per-thread state (recent-motion log, give-up gate, pinned
+    // calibration) for every assistant turn. Unlike motion-summarization this
+    // middleware doesn't summarize on each motion, so the bookkeeping has its
+    // own hook rather than riding the summary kick-off.
+    afterModel: async (state, runtime) => {
+      const messages = (state.messages || []) as BaseMessage[];
+      if (messages.length === 0) return undefined;
+      const threadId = runtime?.configurable?.thread_id ?? '__default__';
+      observeAssistantMessage(threadId, messages[messages.length - 1]);
+      return undefined;
+    },
 
     beforeModel: async (state, runtime) => {
       const messages = (state.messages || []) as BaseMessage[];
@@ -377,8 +380,15 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
           }
 
           if (summaryText) {
+            // Append the deterministic pinned state (recent-motion log +
+            // calibration) the summarizer is told NOT to reproduce — this is
+            // what keeps context-pruner from physically repeating an
+            // already-attempted motion after a prune.
+            const pinned = formatPinnedState(threadId);
             const summaryMsg = new SystemMessage(
-              `Summary of prior steps:\n${summaryText}`
+              pinned
+                ? `Summary of prior steps:\n${summaryText}\n\n${pinned}`
+                : `Summary of prior steps:\n${summaryText}`
             );
             rebuilt = [
               ...pruned.slice(0, firstHumanIdx + 1),

@@ -58,14 +58,17 @@ export default defineConfig({
     // that names a tool, it runs a cheap isolated classifier ("did you mean to
     // call a tool?") and, if so, re-prompts so the tool call streams for real.
     // Set skipClassifier: true to recover on any tool-name mention without the
-    // extra classifier round-trip (cheaper, blunter).
+    // extra classifier round-trip (cheaper, blunter). Set force: true for the
+    // harshest behaviour — re-prompt on ANY no-tool reply (even one that names
+    // no tool, even an empty one). The model must then call some tool every
+    // turn, ending only via finish_task. This is the Ollama-path equivalent of
+    // forcing tool_choice (which ChatOllama can't do); recommended for Gemma.
     'gemma-anti-lazy': {
       llm: { provider: 'ollama', model: 'gemma4:31b' },
       middleware: ['frontend-images', 'context-pruner', 'lazy-tool-recovery'],
       contextPruner: { maxContextTokens: 30_000 },
       lazyToolRecovery: {
-        maxRecoveries: 1,
-        skipClassifier: false,
+        force: true,
       },
     },
   },

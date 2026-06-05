@@ -109,6 +109,10 @@ const middleware = buildMiddleware(profile.middleware, llm, profile);
 const config = {
   ...DEFAULT_CONFIG,
   llm,
+  // Cap the agent's super-steps per run. gaunt-sloth defaults to 1000 (sensible
+  // for long coding chains); for this embodied loop that just lets a stuck run
+  // grind ~1000 local inferences. 500 makes a stuck loop fail faster.
+  recursionLimit: 500,
   // Surfaced by the AG-UI server's /info endpoint so the frontend can show the
   // active model (provider comes from the model's _llmType()).
   modelDisplayName: profile.llm.model,
