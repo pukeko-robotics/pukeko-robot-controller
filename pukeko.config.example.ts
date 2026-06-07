@@ -1,4 +1,4 @@
-import { defineConfig } from './src/lib/config.js';
+import { defineConfig } from './src/lib/config.js'
 
 // Three sample profiles. Select one with `PUKEKO_PROFILE=<name> npm run server`.
 // Env vars (OLLAMA_MODEL, ANTHROPIC_MODEL, ROBOT_HOST, PUKEKO_VERBOSE=1, ...)
@@ -29,6 +29,11 @@ export default defineConfig({
         keepLatestImages: 1,
         imageTokenBudget: 800,
       },
+    },
+
+    openrouter: {
+      llm: { provider: 'openrouter', model: 'google/gemini-2.5-pro' },
+      middleware: ['frontend-images', 'motion-summary'],
     },
 
     anthropic: {
@@ -72,4 +77,4 @@ export default defineConfig({
       },
     },
   },
-});
+})
