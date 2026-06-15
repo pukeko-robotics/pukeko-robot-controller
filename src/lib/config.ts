@@ -4,7 +4,7 @@
 // `pukeko.config.json` at the project root. The loader in `loadConfig.ts`
 // resolves a profile and applies env-var overrides on top.
 
-export type LlmProvider = 'ollama' | 'anthropic' | 'openai' | 'openrouter';
+export type LlmProvider = 'ollama' | 'anthropic' | 'openai' | 'openrouter' | 'google';
 
 export interface LlmSpec {
   provider: LlmProvider;

@@ -75,6 +75,8 @@ function applyEnvOverrides(profile: PukekoProfile): PukekoProfile {
   } else if (next.llm.provider === 'openrouter') {
     if (process.env.OPENROUTER_MODEL) next.llm.model = process.env.OPENROUTER_MODEL;
     if (process.env.OPENROUTER_BASE_URL) next.llm.baseUrl = process.env.OPENROUTER_BASE_URL;
+  } else if (next.llm.provider === 'google') {
+    if (process.env.GOOGLE_MODEL) next.llm.model = process.env.GOOGLE_MODEL;
   }
   if (process.env.ROBOT_HOST) {
     next.robot = { ...(next.robot ?? {}), host: process.env.ROBOT_HOST };

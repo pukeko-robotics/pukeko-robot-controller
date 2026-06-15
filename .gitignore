@@ -5,6 +5,9 @@ dist/
 .npmrc.bk
 *.tsbuildinfo
 *.log
+# Playwright e2e artifacts (see it-robot.js / playwright.config.ts)
+test-results/
+playwright-report/
 .vite/
 .idea/vcs.xml
 logs/

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { startAgUiServer } from '@gaunt-sloth/api';
+import { startAgUiServer } from '@gaunt-sloth/agent';
 import { DEFAULT_CONFIG, type GthConfig } from '@gaunt-sloth/core/config.js';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { captureImageTool } from '../src/agent/captureImageTool.js';

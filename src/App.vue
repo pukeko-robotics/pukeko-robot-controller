@@ -6,7 +6,7 @@ import {
   PkNavHeader,
   PkWebcamPanel,
 } from '@galvanized-pukeko/vue-ui'
-import type { Tool } from '@ag-ui/client'
+import type { Tool } from '@galvanized-pukeko/vue-ui'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
 

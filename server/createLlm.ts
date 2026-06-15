@@ -1,9 +1,11 @@
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatGoogle } from '@langchain/google/node';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatOpenRouter } from '@langchain/openrouter';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { LlmProvider, LlmSpec } from '../src/lib/config.js';
+import { ScriptedRobotChatModel } from './test-support/scriptedRobotModel.js';
 
 // Client-fulfilled tools (capture_image, motions) trigger a langgraph
 // interrupt(). When the model batches several tool calls into one assistant
@@ -14,13 +16,19 @@ import type { LlmProvider, LlmSpec } from '../src/lib/config.js';
 // via invocationKwargs.tool_choice; the OpenAI-shaped providers take it as a
 // request-body param via modelKwargs.)
 //
-// We also FORCE a tool call every turn (tool_choice "required"/"any"). The loop
-// always ends through the `finish_task` tool, so the model never needs to
-// terminate by emitting a no-tool reply — forcing a tool makes the
-// "narrate-but-don't-call" stall structurally impossible. NOTE: ChatOllama does
-// NOT support tool_choice (`tool_choice?: never`), so the Ollama/Gemma path
-// can't be forced — that path still relies on lazy-tool-recovery as the net.
-const NO_PARALLEL_TOOLS = { parallel_tool_calls: false, tool_choice: 'required' } as const;
+// We deliberately do NOT force a tool every turn. Forcing tool_choice
+// ("required"/"any") was tried to make the "narrate-but-don't-call" stall
+// impossible, but on capable hosted models it backfires badly: the model can
+// then never emit a plain-text reply (every turn is a tool-only message, so the
+// UI never shows the agent "talking"), and with no "just answer / stop" escape
+// hatch it loops on a tool — usually capture_image — when uncertain, instead of
+// reading a sensor or calling finish_task. So we use tool_choice "auto": the
+// model talks when it should, acts when it should, and ends naturally (via
+// finish_task or a final text reply). The narrate-but-don't-call case is covered
+// by the `lazy-tool-recovery` middleware instead. NOTE: ChatOllama does not
+// support tool_choice at all (`tool_choice?: never`), so the Ollama/Gemma path
+// is unset anyway and leans on lazy-tool-recovery.
+const NO_PARALLEL_TOOLS = { parallel_tool_calls: false, tool_choice: 'auto' } as const;
 
 export type { LlmProvider, LlmSpec };
 
@@ -30,6 +38,13 @@ export interface LlmSelection {
 }
 
 export function createLlm(spec: LlmSpec): LlmSelection {
+  // E2E seam: a deterministic scripted tool-calling model (move_forward →
+  // finish_task), no network. Guarded by env so it can never engage in normal
+  // runs. See server/test-support/scriptedRobotModel.ts.
+  if (process.env.PUKEKO_FAKE_LLM === '1') {
+    return { provider: spec.provider, llm: new ScriptedRobotChatModel() };
+  }
+
   if (spec.provider === 'ollama') {
     return {
       provider: 'ollama',
@@ -44,12 +59,13 @@ export function createLlm(spec: LlmSpec): LlmSelection {
     return {
       provider: 'anthropic',
       // See NO_PARALLEL_TOOLS — Anthropic spells both controls on tool_choice:
-      // type "any" forces a tool every turn; disable_parallel_tool_use keeps it
-      // to one call.
+      // type "auto" lets the model talk or act per turn (not forced);
+      // disable_parallel_tool_use keeps it to one call so the interrupt ordering
+      // holds.
       llm: new ChatAnthropic({
         model: spec.model,
         invocationKwargs: {
-          tool_choice: { type: 'any', disable_parallel_tool_use: true },
+          tool_choice: { type: 'auto', disable_parallel_tool_use: true },
         },
       }),
     };
@@ -81,7 +97,28 @@ export function createLlm(spec: LlmSpec): LlmSelection {
     };
   }
 
+  if (spec.provider === 'google') {
+    return {
+      provider: 'google',
+      // Native Google AI Studio (Gemini). apiKey falls back to GOOGLE_API_KEY;
+      // platformType 'gai' selects the AI Studio endpoint (not Vertex).
+      // NOTE on forced tool choice: unlike the OpenAI/Anthropic paths above,
+      // ChatGoogle only honours `tool_choice` as a per-call option (mapped to
+      // Gemini's functionCallingConfig), not as a constructor field — and
+      // setting it via `.withConfig`/`.bind` would hand the engine a
+      // RunnableBinding instead of a bindable BaseChatModel. So this path is
+      // unforced and leans on Gemini's native tool-calling reliability (the
+      // small-model `lazy-tool-recovery` net is available per-profile if a
+      // given Gemini model ever narrates instead of calling).
+      llm: new ChatGoogle({
+        model: spec.model,
+        apiKey: process.env.GOOGLE_API_KEY,
+        platformType: 'gai',
+      }),
+    };
+  }
+
   throw new Error(
-    `Unknown LLM provider: ${spec.provider}. Expected 'ollama', 'anthropic', 'openai', or 'openrouter'.`
+    `Unknown LLM provider: ${spec.provider}. Expected 'ollama', 'anthropic', 'openai', 'openrouter', or 'google'.`
   );
 }
