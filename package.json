@@ -20,8 +20,8 @@
   },
   "dependencies": {
     "@galvanized-pukeko/vue-ui": "^0.0.16",
-    "@gaunt-sloth/agent": "file:../gaunt-sloth-assistant/packages/agent",
-    "@gaunt-sloth/core": "file:../gaunt-sloth-assistant/packages/core",
+    "@gaunt-sloth/agent": "file:../gaunt-sloth/packages/agent",
+    "@gaunt-sloth/core": "file:../gaunt-sloth/packages/core",
     "@langchain/anthropic": "^1.4.1",
     "@langchain/core": "^1.1.49",
     "@langchain/google": "^0.1.12",
