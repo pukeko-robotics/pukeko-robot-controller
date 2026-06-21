@@ -6,14 +6,15 @@
   "license": "MIT",
   "author": "Andrew Kondratev",
   "type": "module",
+  "packageManager": "pnpm@11.3.0",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
-    "use:local": "npm install --registry http://localhost:4873 --no-package-lock --no-save",
+    "use:local": "pnpm install --registry http://localhost:4873 --no-lockfile",
     "dev": "vite",
     "dev:ag-ui": "AGUI_URL=http://localhost:3000/agents/default/run vite",
     "server": "node --import=tsx ./server/index.ts",
     "stub": "node --import=tsx robot-stub/index.ts",
-    "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"npm:server\" \"npm:dev\"",
+    "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"pnpm:server\" \"pnpm:dev\"",
     "test": "vitest run",
     "e2e": "node it-robot.js",
     "e2e:live": "E2E_LIVE=1 node it-robot.js",
@@ -27,6 +28,7 @@
     "@langchain/anthropic": "^1.4.1",
     "@langchain/core": "^1.1.49",
     "@langchain/google": "^0.1.12",
+    "@langchain/langgraph": "^1.4.4",
     "@langchain/ollama": "1.2.6",
     "@langchain/openai": "^1.4.7",
     "@langchain/openrouter": "^0.3.0",
@@ -35,9 +37,6 @@
     "langchain": "^1.4.5",
     "vue": "^3.5.13",
     "zod": "^3.25.76"
-  },
-  "overrides": {
-    "uuid": ">=11.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
@@ -55,10 +54,5 @@
     "vite": "^8.0.16",
     "vitest": "^4.1.9",
     "vue-tsc": "^2.2.12"
-  },
-  "allowScripts": {
-    "esbuild@0.28.1": true,
-    "esbuild@0.28.0": true,
-    "esbuild@0.27.7": true
   }
 }
