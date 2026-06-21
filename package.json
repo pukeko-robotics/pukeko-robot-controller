@@ -7,6 +7,8 @@
   "author": "Andrew Kondratev",
   "type": "module",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "use:local": "npm install --registry http://localhost:4873 --no-package-lock --no-save",
     "dev": "vite",
     "dev:ag-ui": "AGUI_URL=http://localhost:3000/agents/default/run vite",
     "server": "node --import=tsx ./server/index.ts",
