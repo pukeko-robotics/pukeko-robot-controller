@@ -44,10 +44,10 @@ Architecture and internals are documented in [AGENTS.md](./AGENTS.md).
 The bundled stub mimics the device's HTTP API, so the full loop runs without a robot:
 
 ```sh
-npm install
-npm run stub                              # device stub on :8080
-ROBOT_HOST=localhost:8080 npm run server  # AG-UI backend on :3000
-npm run dev:ag-ui                         # web UI on :5173
+pnpm install
+pnpm run stub                              # device stub on :8080
+ROBOT_HOST=localhost:8080 pnpm run server  # AG-UI backend on :3000
+pnpm run dev:ag-ui                         # web UI on :5173
 ```
 
 Open <http://localhost:5173>, allow camera access, and give the agent a goal.
@@ -58,8 +58,8 @@ Flash your device with firmware that exposes its actions over HTTP (the project 
 see above), then point the backend at the device's host and start the backend and UI:
 
 ```sh
-ROBOT_HOST=<device-ip> npm run server
-npm run dev:ag-ui
+ROBOT_HOST=<device-ip> pnpm run server
+pnpm run dev:ag-ui
 ```
 
 The example Acebott biped serves its own Wi-Fi access point at `192.168.4.1`, which is the
@@ -80,11 +80,11 @@ default `ROBOT_HOST`.
 
 | Script | Description |
 |---|---|
-| `npm run dev:ag-ui` | Web UI (connects to the backend on :3000) |
-| `npm run server` | AG-UI backend on :3000 |
-| `npm run stub` | Device HTTP stub on :8080 |
-| `npm test` | Unit tests |
-| `npm run build` | Type-check and production build |
+| `pnpm run dev:ag-ui` | Web UI (connects to the backend on :3000) |
+| `pnpm run server` | AG-UI backend on :3000 |
+| `pnpm run stub` | Device HTTP stub on :8080 |
+| `pnpm test` | Unit tests |
+| `pnpm run build` | Type-check and production build |
 
 ## Contributing & license
 

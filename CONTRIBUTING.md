@@ -10,14 +10,14 @@ By participating, you agree to abide by our
 ## Getting started
 
 1. Fork and clone the repo.
-2. `npm install`
+2. `pnpm install`
 3. See [AGENTS.md](./AGENTS.md) for the architecture, how to run the app, and
    how to smoke-test it (the README's "Running…" sections cover the commands).
 
 ## Before opening a PR
 
-- `npm run type-check` — must pass.
-- `npm test` — must pass.
+- `pnpm run type-check` — must pass.
+- `pnpm test` — must pass.
 - New code is formatted with Prettier (`.prettierrc.json`); match the style of
   the surrounding code.
 - Keep PRs focused, and describe what changed and why.
@@ -38,7 +38,7 @@ Create a gitignored `.npmrc` at the repo root:
 @galvanized-pukeko:registry=http://localhost:4873
 ```
 
-Then `npm install` pulls those scopes from Verdaccio and everything else from
+Then `pnpm install` pulls those scopes from Verdaccio and everything else from
 the public registry. To consume only the published versions, delete `.npmrc`
 before installing.
 
@@ -53,14 +53,14 @@ repo) inside this project before cutting a real npm release:
 ```sh
 # in the vue-ui package's repo
 npm version patch --no-git-tag-version -w @galvanized-pukeko/vue-ui
-npm run build -w @galvanized-pukeko/vue-ui
+pnpm --filter @galvanized-pukeko/vue-ui run build
 npm publish -w @galvanized-pukeko/vue-ui --registry http://localhost:4873
 
 # back in this repo
-npm install @galvanized-pukeko/vue-ui@<version> --registry http://localhost:4873
+pnpm add @galvanized-pukeko/vue-ui@<version> --registry http://localhost:4873
 ```
 
-> ⚠️ That install rewrites `package-lock.json` to resolve the package from
+> ⚠️ That install rewrites `pnpm-lock.yaml` to resolve the package from
 > `localhost:4873`. **Don't commit that lockfile** — cut a real release to the
 > public registry first, then re-resolve the lockfile against it.
 

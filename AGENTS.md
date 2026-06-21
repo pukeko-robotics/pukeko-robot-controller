@@ -6,16 +6,16 @@ A Vue web UI + AG-UI backend that lets an LLM drive an Acebott biped robot in fr
 
 ```sh
 # robot stub (port 8080)
-npm run stub
+pnpm run stub
 
 # AG-UI backend (port 3000)
-ROBOT_HOST=localhost:8080 npm run server
+ROBOT_HOST=localhost:8080 pnpm run server
 
 # web UI (port 5173)
-npm run dev:ag-ui
+pnpm run dev:ag-ui
 ```
 
-Real robot: skip `npm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT_HOST=192.168.4.1` (default) or whatever IP it picks up.
+Real robot: skip `pnpm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT_HOST=192.168.4.1` (default) or whatever IP it picks up.
 
 ## Architecture
 
@@ -45,13 +45,13 @@ Real robot: skip `npm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT_
 
 ## Tests
 
-`npm test` — vitest cases covering the robot stub HTTP behaviour, the webcam panel, and the motion-summarization middleware. The before/after canvas composition is **not** covered by unit tests (jsdom has no canvas) — covered by the browser e2e instead.
+`pnpm test` — vitest cases covering the robot stub HTTP behaviour, the webcam panel, and the motion-summarization middleware. The before/after canvas composition is **not** covered by unit tests (jsdom has no canvas) — covered by the browser e2e instead.
 
 ## Browser e2e
 
-`npm run e2e` boots the robot stub, the AG-UI server, and Vite, then drives a real Chromium (with a **fake camera**, so the webcam-capture + Before/After compose path runs without hardware) through a `move_forward → finish_task` round-trip and asserts the tool badges render and the run finalizes. It's **CI-stable**: the server runs a deterministic scripted model (`PUKEKO_FAKE_LLM=1`, `server/test-support/scriptedRobotModel.ts`) — no LLM, no network, no flake. Harness: `it-robot.js`; spec: `e2e/robot.spec.ts`.
+`pnpm run e2e` boots the robot stub, the AG-UI server, and Vite, then drives a real Chromium (with a **fake camera**, so the webcam-capture + Before/After compose path runs without hardware) through a `move_forward → finish_task` round-trip and asserts the tool badges render and the run finalizes. It's **CI-stable**: the server runs a deterministic scripted model (`PUKEKO_FAKE_LLM=1`, `server/test-support/scriptedRobotModel.ts`) — no LLM, no network, no flake. Harness: `it-robot.js`; spec: `e2e/robot.spec.ts`.
 
-`npm run e2e:live` runs the same flow against a **real LLM** (`E2E_LIVE=1`, needs an API key) — opt-in, not for default CI.
+`pnpm run e2e:live` runs the same flow against a **real LLM** (`E2E_LIVE=1`, needs an API key) — opt-in, not for default CI.
 
 ## Manual smoke-testing in the browser
 
