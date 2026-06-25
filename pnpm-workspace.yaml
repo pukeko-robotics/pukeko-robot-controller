@@ -20,7 +20,7 @@ overrides:
   '@gaunt-sloth/core': 'file:../gaunt-sloth/packages/core'
   '@gaunt-sloth/agent': 'file:../gaunt-sloth/packages/agent'
   '@gaunt-sloth/review': 'file:../gaunt-sloth/packages/review'
-  '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko-ai-ui/packages/galvanized-pukeko-vue-ui'
+  '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui'
 
 # Dependencies pnpm is allowed to run install/build scripts for (the pnpm
 # equivalent of the old npm allow-scripts approval that listed esbuild@*).
