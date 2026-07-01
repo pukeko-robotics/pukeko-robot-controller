@@ -96,6 +96,12 @@ async function runMotion(toolName: string, endpoint: string, args: unknown): Pro
     })
   }
 
+  try {
+    await fetch(robotUrl('/stop'))
+  } catch (err) {
+    console.warn(`[App] Failed to stop after ${motionLabel}:`, err)
+  }
+
   const afterFrame = webcamPanelRef.value.captureFrame()
   if (!afterFrame) {
     return JSON.stringify({ error: 'Failed to capture After frame.', motion: motionLabel })
