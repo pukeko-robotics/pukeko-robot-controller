@@ -33,6 +33,10 @@ export interface ObservabilityOptions {
 
 export interface RobotOptions {
   host?: string;
+  // Named robot preset (RC-1) selecting the tool set for this hardware
+  // variant — see src/agent/robotPresets/. Defaults to 'ACEBOTT-QD021'
+  // (DEFAULT_ROBOT_PRESET_ID) when unset.
+  preset?: string;
 }
 
 export interface ContextPrunerProfileOpts {

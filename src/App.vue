@@ -7,39 +7,27 @@ import {
   PkWebcamPanel,
 } from '@galvanized-pukeko/vue-ui'
 import type { Tool } from '@galvanized-pukeko/vue-ui'
+import { DEFAULT_ROBOT_PRESET_ID, getClientToolDefs } from './agent/robotPresets/index.js'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
 
 const ROBOT_HOST = import.meta.env.VITE_ROBOT_HOST ?? '192.168.4.1'
+// Robot preset (RC-1): which named tool set this hardware variant exposes.
+// Mirrors the VITE_ROBOT_HOST convention above — a config value is the
+// minimal UI hook for this increment (no preset-picker widget yet).
+const ROBOT_PRESET = import.meta.env.VITE_ROBOT_PRESET ?? DEFAULT_ROBOT_PRESET_ID
 
 function robotUrl(path: string): string {
   return `http://${ROBOT_HOST}${path}`
 }
 
-const stepsParameter = {
-  type: 'object' as const,
-  properties: {
-    steps: {
-      type: 'integer' as const,
-      minimum: 1,
-      maximum: 10,
-      description:
-        'Number of cycles to run (1-10, defaults to 1). 1 forward/backward cycle ≈ 1.5 cm; 1 turn cycle ≈ 15°; 6 turn cycles ≈ 90°.',
-    },
-  },
-  required: [],
-}
-
-const motionDescriptions = {
-  move_forward:
-    'Walk the robot forward. Optional `steps` (1-10). ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
-  move_backward:
-    'Walk the robot backward. Optional `steps` (1-10). ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
-  turn_left:
-    'Rotate the robot left in place. Optional `steps` (1-10). ~15° per cycle; 6 ≈ 90°. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
-  turn_right:
-    'Rotate the robot right in place. Optional `steps` (1-10). ~15° per cycle; 6 ≈ 90°. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
-} as const
+// Client-fulfilled motion tools for the active preset, in preset order.
+// Their name/description/parameters come straight from the preset registry
+// (src/agent/robotPresets/) — the same data the AG-UI server's
+// createRobotTools() uses to build the matching server-stub tools, so the
+// two sides can't drift the way the old hand-duplicated App.vue constants
+// could.
+const motionToolDefs = getClientToolDefs(ROBOT_PRESET)
 
 const clientTools: Tool[] = [
   {
@@ -52,26 +40,13 @@ const clientTools: Tool[] = [
       required: [],
     },
   },
-  {
-    name: 'move_forward',
-    description: motionDescriptions.move_forward,
-    parameters: stepsParameter,
-  },
-  {
-    name: 'move_backward',
-    description: motionDescriptions.move_backward,
-    parameters: stepsParameter,
-  },
-  {
-    name: 'turn_left',
-    description: motionDescriptions.turn_left,
-    parameters: stepsParameter,
-  },
-  {
-    name: 'turn_right',
-    description: motionDescriptions.turn_right,
-    parameters: stepsParameter,
-  },
+  ...motionToolDefs.map((def) => ({
+    name: def.name,
+    // clientDescription (when set) is authoritative for what the model
+    // sees for a client-fulfilled tool — see RobotToolDef.
+    description: def.clientDescription ?? def.description,
+    parameters: def.jsonSchema,
+  })),
 ]
 
 function frameToEnvelope(frame: string | null): { mimeType: string; data: string } | null {
@@ -91,11 +66,7 @@ function coerceSteps(args: unknown): number {
   return 1
 }
 
-async function runMotion(
-  toolName: keyof typeof motionDescriptions,
-  endpoint: string,
-  args: unknown
-): Promise<string> {
+async function runMotion(toolName: string, endpoint: string, args: unknown): Promise<string> {
   if (!webcamPanelRef.value) {
     return JSON.stringify({ error: 'Webcam not initialized' })
   }
@@ -149,7 +120,7 @@ async function runMotion(
   })
 }
 
-const clientToolHandlers = {
+const clientToolHandlers: Record<string, (args: unknown) => Promise<string>> = {
   capture_image: async () => {
     if (!webcamPanelRef.value) {
       return JSON.stringify({ error: 'Webcam not initialized' })
@@ -159,10 +130,15 @@ const clientToolHandlers = {
     if (envelope) return JSON.stringify(envelope)
     return JSON.stringify({ error: 'Failed to capture frame. Is the camera active?' })
   },
-  move_forward: (args: unknown) => runMotion('move_forward', '/forward', args),
-  move_backward: (args: unknown) => runMotion('move_backward', '/backward', args),
-  turn_left: (args: unknown) => runMotion('turn_left', '/turn_left', args),
-  turn_right: (args: unknown) => runMotion('turn_right', '/turn_right', args),
+  ...Object.fromEntries(
+    motionToolDefs.map((def) => {
+      if (!def.clientEndpoint) {
+        throw new Error(`Client-fulfilled tool '${def.name}' is missing a clientEndpoint.`)
+      }
+      const endpoint = def.clientEndpoint
+      return [def.name, (args: unknown) => runMotion(def.name, endpoint, args)]
+    })
+  ),
 }
 
 // Provider/model label shown in the nav header, fetched live from the AG-UI

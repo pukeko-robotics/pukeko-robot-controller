@@ -12,6 +12,7 @@ const ENV_KEYS = [
   'OLLAMA_BASE_URL',
   'ANTHROPIC_MODEL',
   'ROBOT_HOST',
+  'ROBOT_PRESET',
   'PUKEKO_DUMP_DIR',
   'PUKEKO_VERBOSE',
 ] as const
@@ -80,6 +81,19 @@ describe('loadConfig', () => {
     const resolved = await loadConfig(tmpDir)
     expect(resolved.profile.llm.model).toBe('gemma-override')
     expect(resolved.profile.robot?.host).toBe('10.0.0.1')
+  })
+
+  it('applies ROBOT_PRESET as an env override (RC-1)', async () => {
+    writeFileSync(
+      join(tmpDir, 'pukeko.config.json'),
+      JSON.stringify({
+        defaultProfile: 'a',
+        profiles: { a: { llm: { provider: 'ollama', model: 'a-model' } } },
+      })
+    )
+    process.env.ROBOT_PRESET = 'ACEBOTT-QD021'
+    const resolved = await loadConfig(tmpDir)
+    expect(resolved.profile.robot?.preset).toBe('ACEBOTT-QD021')
   })
 
   it('PUKEKO_VERBOSE=1 flips observability on with defaults', async () => {

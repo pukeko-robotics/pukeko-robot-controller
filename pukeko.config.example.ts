@@ -12,6 +12,7 @@ export default defineConfig({
       // Both prompt files default to the repo root and may be overridden per profile:
       // systemPromptPath: 'system-prompt.md',          // behavioural prompt (gaunt-sloth projectGuidelines)
       // summaryPromptPath: 'summarization-prompt.md',   // motion-summarization prompt
+      // robot: { host: '192.168.4.1', preset: 'ACEBOTT-QD021' }, // RC-1: named tool-set preset for this hardware; overridable with ROBOT_HOST / ROBOT_PRESET
     },
 
     'gemma-debug': {

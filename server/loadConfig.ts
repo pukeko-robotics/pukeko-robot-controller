@@ -81,6 +81,9 @@ function applyEnvOverrides(profile: PukekoProfile): PukekoProfile {
   if (process.env.ROBOT_HOST) {
     next.robot = { ...(next.robot ?? {}), host: process.env.ROBOT_HOST };
   }
+  if (process.env.ROBOT_PRESET) {
+    next.robot = { ...(next.robot ?? {}), preset: process.env.ROBOT_PRESET };
+  }
   if (process.env.PUKEKO_DUMP_DIR) {
     next.observability = {
       verbose: next.observability?.verbose ?? true,

@@ -10,6 +10,7 @@ import { createContextPrunerMiddleware } from '../src/agent/contextPrunerMiddlew
 import { createLazyToolRecoveryMiddleware } from '../src/agent/lazyToolRecoveryMiddleware.js';
 import { createObservabilityMiddleware } from './observabilityMiddleware.js';
 import { createRobotTools } from '../src/agent/robotTools.js';
+import { DEFAULT_ROBOT_PRESET_ID } from '../src/agent/robotPresets/index.js';
 import { loadConfig } from './loadConfig.js';
 import type { MiddlewareEntry, PukekoProfile } from '../src/lib/config.js';
 import { createLlm } from './createLlm.js';
@@ -33,9 +34,10 @@ console.log(
 );
 
 const robotHost = profile.robot?.host ?? DEFAULT_ROBOT_HOST;
+const robotPreset = profile.robot?.preset ?? DEFAULT_ROBOT_PRESET_ID;
 const { provider, llm } = createLlm(profile.llm);
 console.log(
-  `[server] LLM: ${provider} / ${profile.llm.model}${profile.llm.baseUrl ? ` @ ${profile.llm.baseUrl}` : ''}; robot host: ${robotHost}`
+  `[server] LLM: ${provider} / ${profile.llm.model}${profile.llm.baseUrl ? ` @ ${profile.llm.baseUrl}` : ''}; robot host: ${robotHost}; robot preset: ${robotPreset}`
 );
 
 function buildMiddleware(entries: MiddlewareEntry[] | undefined, llm: BaseChatModel, profile: PukekoProfile): unknown[] {
@@ -121,7 +123,7 @@ const config = {
   // slot (a configurable filename), letting us use a clean `system-prompt.md`
   // instead of the hardcoded `.gsloth.system.md`.
   projectGuidelines: profile.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_FILE,
-  tools: [captureImageTool, ...createRobotTools(robotHost)],
+  tools: [captureImageTool, ...createRobotTools(robotHost, robotPreset)],
   middleware,
   commands: {
     ...DEFAULT_CONFIG.commands,
