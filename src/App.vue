@@ -6,8 +6,8 @@ import {
   PkNavHeader,
   PkWebcamPanel,
 } from '@galvanized-pukeko/vue-ui'
-import type { Tool } from '@galvanized-pukeko/vue-ui'
-import { DEFAULT_ROBOT_PRESET_ID, getClientToolDefs } from './agent/robotPresets/index.js'
+import { DEFAULT_ROBOT_PRESET_ID } from './agent/robotPresets/index.js'
+import { RobotSession } from './robotSession/index.js'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
 
@@ -17,161 +17,30 @@ const ROBOT_HOST = import.meta.env.VITE_ROBOT_HOST ?? '192.168.4.1'
 // minimal UI hook for this increment (no preset-picker widget yet).
 const ROBOT_PRESET = import.meta.env.VITE_ROBOT_PRESET ?? DEFAULT_ROBOT_PRESET_ID
 
-function robotUrl(path: string): string {
-  return `http://${ROBOT_HOST}${path}`
-}
-
-// Client-fulfilled motion tools for the active preset, in preset order.
-// Their name/description/parameters come straight from the preset registry
-// (src/agent/robotPresets/) — the same data the AG-UI server's
-// createRobotTools() uses to build the matching server-stub tools, so the
-// two sides can't drift the way the old hand-duplicated App.vue constants
-// could.
-const motionToolDefs = getClientToolDefs(ROBOT_PRESET)
-
-const clientTools: Tool[] = [
-  {
-    name: 'capture_image',
-    description:
-      'Capture a photo from the robot webcam. Returns the current image of the robot and its surroundings as seen from above.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
+// RC-7: all robot behaviour (robotUrl, the recipe interpreter that fulfils the
+// motion tools, capture_image, the AG-UI clientTools + handlers, and the live
+// agent-label fetch) lives in the unit-testable RobotSession service. App.vue
+// only instantiates it, supplies the browser-side capabilities backed by the
+// mounted <PkWebcamPanel>, and renders. The webcam methods are read lazily
+// through the ref so the panel need not exist yet at construction time.
+const session = new RobotSession({
+  robotHost: ROBOT_HOST,
+  presetId: ROBOT_PRESET,
+  agUiUrl: typeof __AGUI_URL__ !== 'undefined' ? __AGUI_URL__ : '',
+  capabilities: {
+    isReady: () => webcamPanelRef.value != null,
+    captureFrame: () => webcamPanelRef.value?.captureFrame() ?? null,
+    composeBeforeAfter: (before, after) =>
+      webcamPanelRef.value?.composeBeforeAfter(before, after) ?? Promise.resolve(null),
+    fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
   },
-  ...motionToolDefs.map((def) => ({
-    name: def.name,
-    // clientDescription (when set) is authoritative for what the model
-    // sees for a client-fulfilled tool — see RobotToolDef.
-    description: def.clientDescription ?? def.description,
-    parameters: def.jsonSchema,
-  })),
-]
+})
 
-function frameToEnvelope(frame: string | null): { mimeType: string; data: string } | null {
-  if (!frame) return null
-  const match = frame.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,([^"]*)$/)
-  if (!match) return null
-  return { mimeType: match[1], data: match[2] }
-}
+const clientTools = session.clientTools
+const clientToolHandlers = session.clientToolHandlers
+const agentLabel = session.agentLabel
 
-function coerceSteps(args: unknown): number {
-  if (args && typeof args === 'object' && 'steps' in args) {
-    const raw = (args as { steps?: unknown }).steps
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) {
-      return Math.min(10, Math.floor(raw))
-    }
-  }
-  return 1
-}
-
-async function runMotion(toolName: string, endpoint: string, args: unknown): Promise<string> {
-  if (!webcamPanelRef.value) {
-    return JSON.stringify({ error: 'Webcam not initialized' })
-  }
-  const steps = coerceSteps(args)
-  const motionLabel = steps === 1 ? toolName : `${toolName} (steps=${steps})`
-
-  const beforeFrame = webcamPanelRef.value.captureFrame()
-  if (!beforeFrame) {
-    return JSON.stringify({ error: 'Failed to capture Before frame. Is the camera active?', motion: motionLabel })
-  }
-
-  const query = steps > 1 ? `?steps=${steps}` : ''
-  try {
-    const res = await fetch(robotUrl(`${endpoint}${query}`))
-    if (!res.ok) {
-      return JSON.stringify({
-        error: `Robot returned HTTP ${res.status} for ${endpoint}`,
-        motion: motionLabel,
-      })
-    }
-    await res.text()
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'unknown error'
-    return JSON.stringify({
-      error: `Failed to reach robot at ${ROBOT_HOST}: ${message}`,
-      motion: motionLabel,
-    })
-  }
-
-  try {
-    await fetch(robotUrl('/stop'))
-  } catch (err) {
-    console.warn(`[App] Failed to stop after ${motionLabel}:`, err)
-  }
-
-  const afterFrame = webcamPanelRef.value.captureFrame()
-  if (!afterFrame) {
-    return JSON.stringify({ error: 'Failed to capture After frame.', motion: motionLabel })
-  }
-
-  let compositeUrl: string | null
-  try {
-    compositeUrl = await webcamPanelRef.value.composeBeforeAfter(beforeFrame, afterFrame)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'compose error'
-    return JSON.stringify({ error: `Failed to compose Before/After image: ${message}`, motion: motionLabel })
-  }
-
-  const envelope = frameToEnvelope(compositeUrl)
-  if (!envelope) {
-    return JSON.stringify({ error: 'Invalid composite frame format', motion: motionLabel })
-  }
-
-  return JSON.stringify({
-    ...envelope,
-    motion: motionLabel,
-  })
-}
-
-const clientToolHandlers: Record<string, (args: unknown) => Promise<string>> = {
-  capture_image: async () => {
-    if (!webcamPanelRef.value) {
-      return JSON.stringify({ error: 'Webcam not initialized' })
-    }
-    const frame = webcamPanelRef.value.captureFrame()
-    const envelope = frameToEnvelope(frame)
-    if (envelope) return JSON.stringify(envelope)
-    return JSON.stringify({ error: 'Failed to capture frame. Is the camera active?' })
-  },
-  ...Object.fromEntries(
-    motionToolDefs.map((def) => {
-      if (!def.clientEndpoint) {
-        throw new Error(`Client-fulfilled tool '${def.name}' is missing a clientEndpoint.`)
-      }
-      const endpoint = def.clientEndpoint
-      return [def.name, (args: unknown) => runMotion(def.name, endpoint, args)]
-    })
-  ),
-}
-
-// Provider/model label shown in the nav header, fetched live from the AG-UI
-// server's /info endpoint so it always reflects the running profile (including
-// env overrides), rather than a duplicated build-time constant.
-const agentLabel = ref('')
-
-async function loadAgentInfo() {
-  try {
-    const buildUrl = typeof __AGUI_URL__ !== 'undefined' ? __AGUI_URL__ : ''
-    let agUiUrl = buildUrl
-    if (!agUiUrl) {
-      const cfgRes = await fetch('/config.json')
-      if (cfgRes.ok) agUiUrl = (await cfgRes.json()).agUiUrl ?? ''
-    }
-    if (!agUiUrl) return
-    const base = agUiUrl.replace(/\/agents\/.*$/, '')
-    const res = await fetch(`${base}/info`)
-    if (!res.ok) return
-    const info = (await res.json()) as { provider?: string | null; model?: string | null }
-    agentLabel.value = [info.provider, info.model].filter(Boolean).join(' ')
-  } catch (err) {
-    console.warn('[App] Failed to load agent info:', err)
-  }
-}
-
-onMounted(loadAgentInfo)
+onMounted(() => session.loadAgentInfo())
 </script>
 
 <template>

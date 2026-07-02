@@ -11,6 +11,60 @@ import type { ZodTypeAny } from 'zod';
 
 export type ToolFulfillment = 'client' | 'server';
 
+// --- Recipe vocabulary (RC-7) --------------------------------------------
+// A client-fulfilled tool can carry an ordered `recipe`: a small sequence of
+// declarative steps a generic interpreter runs against a browser capability
+// context (webcam ref, `fetch`, robotUrl). This is what lets one model-facing
+// tool bind *several* API/webcam calls (e.g. move_forward hides Before-frame →
+// drive endpoint → /stop → After-frame → compose → return-one-image) while
+// keeping that multi-call procedure as preset-owned DATA rather than hardcoded
+// in App.vue. A robot whose gait self-terminates simply omits the /stop step;
+// no code change. Pure types only — no runtime — so this stays a leaf module.
+
+// Where an `http` step sends its GET. Either a literal robot route ('/stop'),
+// or the owning tool's own `clientEndpoint` resolved at run time — the latter
+// is what lets the four motion tools share ONE recipe while each hits its own
+// endpoint (/forward, /backward, /turn_left, /turn_right).
+export type HttpPath = string | { fromDef: 'clientEndpoint' };
+
+// Capture a webcam frame into a named slot. `failMessage` is the exact error
+// string returned (with the motion label) when the camera yields no frame —
+// carried as data so the historically-different Before/After wording is
+// reproduced without hardcoding it in the interpreter.
+export interface CaptureFrameStep {
+  step: 'captureFrame';
+  as: string;
+  failMessage: string;
+}
+
+// GET a robot endpoint. `withSteps` appends `?steps=N` (only when N > 1, to
+// match the original query shaping). `optional` = a best-effort side-effect
+// call (the /stop halt): its HTTP status is ignored and a throw is logged and
+// stepped over rather than aborting the recipe.
+export interface HttpStep {
+  step: 'http';
+  path: HttpPath;
+  withSteps?: boolean;
+  optional?: boolean;
+}
+
+// Compose two named frame slots into one Before/After image, stored under `as`.
+export interface ComposeStep {
+  step: 'compose';
+  before: string;
+  after: string;
+  as: string;
+}
+
+// Terminal step: turn the named slot into the returned image envelope
+// (`{ mimeType, data, motion }`). Errors if the slot holds no valid frame.
+export interface ReturnImageStep {
+  step: 'returnImage';
+  from: string;
+}
+
+export type RecipeStep = CaptureFrameStep | HttpStep | ComposeStep | ReturnImageStep;
+
 export interface RobotToolDef {
   name: string;
   // Server-side (LangChain `tool()`) description. For client-fulfilled
@@ -45,6 +99,13 @@ export interface RobotToolDef {
   // '/turn_left'. Also NOT derivable from `name` (move_/turn_ are stripped
   // inconsistently on the real firmware routes).
   clientEndpoint?: string;
+  // Client-fulfilled tools (RC-7): the ordered step recipe the browser's
+  // recipe interpreter runs to fulfil this one model-visible tool. When a
+  // client tool binds more than a single endpoint (motion tools capture +
+  // drive + /stop + capture + compose), that whole procedure lives here as
+  // DATA. Optional: a client tool with a single-endpoint behaviour need not
+  // declare one. Server-fulfilled tools never carry a recipe.
+  recipe?: RecipeStep[];
   // The one structured terminal tool (finish_task): ends the run instead of
   // looping the result back to the model. See robotTools.ts for why.
   returnDirect?: boolean;
