@@ -32,5 +32,15 @@ export function getClientToolDefs(id: string = DEFAULT_ROBOT_PRESET_ID): RobotTo
   return getRobotPreset(id).tools.filter((t) => t.fulfillment === 'client');
 }
 
-export type { RobotPreset, RobotToolDef, ToolFulfillment } from './types.js';
+export type {
+  RobotPreset,
+  RobotToolDef,
+  ToolFulfillment,
+  RecipeStep,
+  HttpPath,
+  CaptureFrameStep,
+  HttpStep,
+  ComposeStep,
+  ReturnImageStep,
+} from './types.js';
 export { ACEBOTT_QD021_PRESET } from './acebottQd021.js';

@@ -7,7 +7,7 @@
 // import from the browser bundle (App.vue) as well as the server.
 import { z } from 'zod';
 import { FINISH_TOOL_NAME, MOTION_TOOL_NAMES } from '../robotToolNames.js';
-import type { RobotPreset } from './types.js';
+import type { RecipeStep, RobotPreset } from './types.js';
 
 // IMPORTANT: gaunt-sloth's AG-UI server treats a client-declared run-input
 // tool as *authoritative* for client-fulfilled tools — it drops the
@@ -67,6 +67,33 @@ const finishZodSchema = z.object({
 const MOTION_DESCRIPTION_TAIL =
   'Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.';
 
+// RC-7: the client-side fulfilment recipe shared by all four QD021 motion
+// tools. What used to be App.vue's hardcoded `runMotion` sequence now lives
+// here as DATA, run by the generic recipe interpreter (src/robotSession/):
+// capture a Before frame, drive this tool's own motion endpoint, halt with
+// /stop, capture an After frame, compose them, and return the single image.
+// The motion http step resolves its path from the def's `clientEndpoint`, so
+// one recipe serves /forward, /backward, /turn_left and /turn_right.
+//
+// The `/stop` step: whether a *bounded* `steps` motion still needs an explicit
+// halt is a QD021-firmware GAIT fact — its walk/turn gaits free-run until told
+// to stop, so a bounded move must be terminated or the robot keeps going while
+// the After frame is captured. That is exactly why the halt belongs here as
+// recipe DATA and not as a hardcoded call: a robot whose gait self-terminates
+// after `steps` cycles would simply drop this one line and behave correctly.
+const MOTION_RECIPE: RecipeStep[] = [
+  {
+    step: 'captureFrame',
+    as: 'before',
+    failMessage: 'Failed to capture Before frame. Is the camera active?',
+  },
+  { step: 'http', path: { fromDef: 'clientEndpoint' }, withSteps: true },
+  { step: 'http', path: '/stop', optional: true },
+  { step: 'captureFrame', as: 'after', failMessage: 'Failed to capture After frame.' },
+  { step: 'compose', before: 'before', after: 'after', as: 'composite' },
+  { step: 'returnImage', from: 'composite' },
+];
+
 export const ACEBOTT_QD021_PRESET: RobotPreset = {
   id: 'ACEBOTT-QD021',
   name: 'Acebott QD021 (biped)',
@@ -84,6 +111,7 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
       jsonSchema: stepsJsonSchema,
       fulfillment: 'client',
       clientEndpoint: '/forward',
+      recipe: MOTION_RECIPE,
     },
     {
       name: MOTION_TOOL_NAMES[1], // 'move_backward'
@@ -92,6 +120,7 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
       jsonSchema: stepsJsonSchema,
       fulfillment: 'client',
       clientEndpoint: '/backward',
+      recipe: MOTION_RECIPE,
     },
     {
       name: MOTION_TOOL_NAMES[2], // 'turn_left'
@@ -100,6 +129,7 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
       jsonSchema: stepsJsonSchema,
       fulfillment: 'client',
       clientEndpoint: '/turn_left',
+      recipe: MOTION_RECIPE,
     },
     {
       name: MOTION_TOOL_NAMES[3], // 'turn_right'
@@ -108,6 +138,7 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
       jsonSchema: stepsJsonSchema,
       fulfillment: 'client',
       clientEndpoint: '/turn_right',
+      recipe: MOTION_RECIPE,
     },
     {
       name: 'stop',
