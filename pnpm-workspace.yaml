@@ -1,31 +1,20 @@
-# OPS-6: pnpm config for this single-package repo. pnpm 11.3.0 reads settings
-# from here, not from the "pnpm" field in package.json.
+# pnpm config for this single-package repo. pnpm 11.3.0 reads settings from
+# here, not from the "pnpm" field in package.json.
 
-# Cross-repo @gaunt-sloth/* deps resolve to their sibling worktrees on disk.
-# These overrides are the load-bearing interop fix: gaunt-sloth's own
-# packages/agent declares `@gaunt-sloth/core: workspace:*`, and the
-# `workspace:*` protocol is only resolvable *inside* gaunt-sloth's workspace.
-# Because pnpm overrides apply to transitive deps too, they replace that
-# `workspace:*` specifier with the sibling file: path before resolution — so a
-# plain `pnpm install` here (a separate context) succeeds instead of choking on
-# an unresolvable workspace: spec.
-#
-# @galvanized-pukeko/vue-ui is a private (Verdaccio-published) cross-repo dep —
-# the requested ^0.0.16 is not on the public registry (latest public 0.0.13).
-# Point it at its sibling source too so the dependency graph resolves offline,
-# mirroring the gaunt-sloth approach and the commented local-source aliases in
-# vite.config.ts. (See OPS-6 notes: client build needs the vue-ui sibling built.)
 overrides:
   uuid: '>=11.1.1'
-  '@gaunt-sloth/core': 'file:../gaunt-sloth/packages/core'
-  '@gaunt-sloth/agent': 'file:../gaunt-sloth/packages/agent'
-  '@gaunt-sloth/review': 'file:../gaunt-sloth/packages/review'
-  '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui'
+  # No @gaunt-sloth/* or vue-ui redirects: alpha.6 declares zod `^4.0.0` itself
+  # (GS2-15 fix c), so pnpm no longer dedupes the gaunt-sloth subtree onto this
+  # repo's zod 3; and @galvanized-pukeko/vue-ui@0.1.0 is on public npm, so it
+  # resolves straight from the registry. Clean public-registry install.
 
-# Dependencies pnpm is allowed to run install/build scripts for (the pnpm
-# equivalent of the old npm allow-scripts approval that listed esbuild@*).
-# esbuild needs its postinstall to fetch its native binary; without this pnpm
-# skips it (ERR_PNPM_IGNORED_BUILDS) and vite/vitest fail to start. Written by
-# `pnpm approve-builds`, matching the sibling gaunt-sloth's allowBuilds map.
+  # Dependencies pnpm is allowed to run install/build scripts for. esbuild needs
+  # its postinstall to fetch its native binary; without this pnpm skips it
+  # (ERR_PNPM_IGNORED_BUILDS) and vite/vitest fail to start.
 allowBuilds:
   esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@gaunt-sloth/agent@2.0.0-alpha.6'
+  - '@gaunt-sloth/core@2.0.0-alpha.6'
+  - '@galvanized-pukeko/vue-ui@0.1.0'

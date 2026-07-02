@@ -125,6 +125,13 @@ const config = {
   projectGuidelines: profile.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_FILE,
   tools: [captureImageTool, ...createRobotTools(robotHost, robotPreset)],
   middleware,
+  // Route the AG-UI backend to the lean agent (plain createAgent, no deepagents).
+  // The deep backend's /large_tool_results offload writes oversized tool results
+  // to a virtual FS; under `filesystem: 'none'` that write is denied on every
+  // camera capture, spamming the model into a loop. Lean has no such offload, so
+  // the embodied capture->move loop runs clean. Our own robot tools ride in
+  // `tools` above and are unaffected by the backend choice.
+  agent: { backend: 'lean' },
   commands: {
     ...DEFAULT_CONFIG.commands,
     api: {
