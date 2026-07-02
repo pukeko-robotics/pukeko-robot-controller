@@ -1,6 +1,6 @@
 {
   "name": "pukeko-robot-controller",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "private": true,
   "description": "AI-driven control of an Acebott biped robot via the Pukeko web UI and @gaunt-sloth/agent backend.",
   "license": "MIT",
