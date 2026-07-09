@@ -1,84 +1,59 @@
 import { defineConfig } from './src/lib/config.js'
 
-// Three sample profiles. Select one with `PUKEKO_PROFILE=<name> npm run server`.
-// Env vars (OLLAMA_MODEL, ANTHROPIC_MODEL, ROBOT_HOST, PUKEKO_VERBOSE=1, ...)
-// override individual fields on top of the chosen profile.
+// Sample profiles — select one with `PUKEKO_PROFILE=<name> npm run server`.
+// Env vars (OLLAMA_MODEL, ANTHROPIC_MODEL, ROBOT_HOST, PUKEKO_VERBOSE=1, ...) override
+// individual fields on top of the chosen profile.
+//
+// Unified middleware stack — the same on every profile:
+//   'frontend-images' — surfaces the robot camera frame to the model and the web client.
+//   'context-pruner'  — bounds cost: mechanically drops old image BYTES (keepLatestImages)
+//                       and summarizes lazily only past summarizeAtFraction × maxContextTokens.
+//                       Prefer this over 'motion-summary': motion-summary's per-turn summary
+//                       LLM call fails on Anthropic (unpaired tool_use/tool_result → 400) and so
+//                       never compresses, leaving the image history to grow unbounded → huge bills.
+//   'observability'   — debug logging: per-turn messages/response (+ images) under dumpDir.
+// Local (Ollama) models additionally get 'lazy-tool-recovery' (force): small models narrate a
+//   tool instead of calling it; this re-prompts so the call streams for real. Do NOT add it to
+//   hosted models — it would force a tool onto legitimate plain-text replies.
+const PRUNER_LOCAL = { maxContextTokens: 30_000, summarizeAtFraction: 0.7, keepLatestImages: 1, imageTokenBudget: 800 }
+const PRUNER_HOSTED = { maxContextTokens: 130_000, summarizeAtFraction: 0.7, keepLatestImages: 1, imageTokenBudget: 800 }
+const OBSERVABILITY = { verbose: true, dumpDir: './logs', dumpImages: true }
+
 export default defineConfig({
   defaultProfile: 'gemma-default',
   profiles: {
     'gemma-default': {
       llm: { provider: 'ollama', model: 'gemma4:31b' },
-      middleware: ['frontend-images', 'motion-summary'],
+      middleware: ['frontend-images', 'context-pruner', 'observability', 'lazy-tool-recovery'],
+      contextPruner: PRUNER_LOCAL,
+      observability: OBSERVABILITY,
+      lazyToolRecovery: { force: true },
       // Both prompt files default to the repo root and may be overridden per profile:
-      // systemPromptPath: 'system-prompt.md',          // behavioural prompt (gaunt-sloth projectGuidelines)
-      // summaryPromptPath: 'summarization-prompt.md',   // motion-summarization prompt
-      // robot: { host: '192.168.4.1', preset: 'ACEBOTT-QD021' }, // RC-1: named tool-set preset for this hardware; overridable with ROBOT_HOST / ROBOT_PRESET
-    },
-
-    'gemma-debug': {
-      llm: { provider: 'ollama', model: 'gemma4:31b' },
-      middleware: ['frontend-images', 'motion-summary', 'observability'],
-      observability: { verbose: true, dumpDir: './logs', dumpImages: true },
+      // systemPromptPath: 'system-prompt.md',        // behavioural prompt (gaunt-sloth projectGuidelines)
+      // summaryPromptPath: 'summarization-prompt.md', // context-pruner's lazy-summary prompt
+      // robot: { host: '192.168.4.1', preset: 'ACEBOTT-QD021' }, // overridable with ROBOT_HOST / ROBOT_PRESET
     },
 
     'gpt-5.5': {
       llm: { provider: 'openai', model: 'gpt-5.5' },
-      middleware: ['frontend-images', 'context-pruner'],
-      contextPruner: {
-        maxContextTokens: 130_000,
-        summarizeAtFraction: 0.7,
-        keepLatestImages: 1,
-        imageTokenBudget: 800,
-      },
+      middleware: ['frontend-images', 'context-pruner', 'observability'],
+      contextPruner: PRUNER_HOSTED,
+      observability: OBSERVABILITY,
     },
 
     openrouter: {
       llm: { provider: 'openrouter', model: 'google/gemini-2.5-pro' },
-      middleware: ['frontend-images', 'motion-summary'],
+      middleware: ['frontend-images', 'context-pruner', 'observability'],
+      contextPruner: PRUNER_HOSTED,
+      observability: OBSERVABILITY,
     },
 
     anthropic: {
-      // `cache: true` enables Anthropic prompt caching (recommended for every anthropic
-      // profile): the big system prompt + tool schemas are cached and re-read at ~0.1x
-      // each turn instead of billed as full input tokens. Anthropic-only.
+      // `cache: true` enables Anthropic prompt caching (system prompt + tool schemas re-read at ~0.1x).
       llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', cache: true },
-      middleware: ['frontend-images', 'motion-summary'],
-    },
-
-    // Alternative: mechanical pruner. Preserves reasoning and tool calls
-    // verbatim; only drops image bytes from old messages and reasoning blocks
-    // from old AI turns. Summarizes lazily — only when the pruned history
-    // crosses summarizeAtFraction × maxContextTokens. Mutually exclusive with
-    // 'motion-summary' (both rewrite the head on beforeModel).
-    'gemma-pruner': {
-      llm: { provider: 'ollama', model: 'gemma4:31b' },
-      middleware: ['frontend-images', 'context-pruner'],
-      contextPruner: {
-        maxContextTokens: 30_000,
-        summarizeAtFraction: 0.7,
-        keepLatestImages: 1,
-        imageTokenBudget: 800,
-      },
-    },
-
-    // Adds lazy-tool-recovery: small local models often narrate a tool ("I'll
-    // call `read_distance` next.") and end the turn without emitting the call,
-    // stalling the run. This middleware wraps the model call; on a no-tool reply
-    // that names a tool, it runs a cheap isolated classifier ("did you mean to
-    // call a tool?") and, if so, re-prompts so the tool call streams for real.
-    // Set skipClassifier: true to recover on any tool-name mention without the
-    // extra classifier round-trip (cheaper, blunter). Set force: true for the
-    // harshest behaviour — re-prompt on ANY no-tool reply (even one that names
-    // no tool, even an empty one). The model must then call some tool every
-    // turn, ending only via finish_task. This is the Ollama-path equivalent of
-    // forcing tool_choice (which ChatOllama can't do); recommended for Gemma.
-    'gemma-anti-lazy': {
-      llm: { provider: 'ollama', model: 'gemma4:31b' },
-      middleware: ['frontend-images', 'context-pruner', 'lazy-tool-recovery'],
-      contextPruner: { maxContextTokens: 30_000 },
-      lazyToolRecovery: {
-        force: true,
-      },
+      middleware: ['frontend-images', 'context-pruner', 'observability'],
+      contextPruner: PRUNER_HOSTED,
+      observability: OBSERVABILITY,
     },
   },
 })
