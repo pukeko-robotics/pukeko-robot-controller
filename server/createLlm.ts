@@ -67,6 +67,11 @@ export function createLlm(spec: LlmSpec): LlmSelection {
         invocationKwargs: {
           tool_choice: { type: 'auto', disable_parallel_tool_use: true },
         },
+        // Prompt caching (opt-in via `cache: true` on the profile's llm). A single
+        // top-level cache_control makes @langchain/anthropic place — and advance across
+        // turns — the cache breakpoint automatically, so the stable system prompt + tool
+        // schemas are re-read at ~0.1x instead of billed as full input tokens every turn.
+        ...(spec.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
       }),
     };
   }

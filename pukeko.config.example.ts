@@ -38,7 +38,10 @@ export default defineConfig({
     },
 
     anthropic: {
-      llm: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+      // `cache: true` enables Anthropic prompt caching (recommended for every anthropic
+      // profile): the big system prompt + tool schemas are cached and re-read at ~0.1x
+      // each turn instead of billed as full input tokens. Anthropic-only.
+      llm: { provider: 'anthropic', model: 'claude-sonnet-4-6', cache: true },
       middleware: ['frontend-images', 'motion-summary'],
     },
 

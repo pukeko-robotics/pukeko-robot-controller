@@ -10,6 +10,14 @@ export interface LlmSpec {
   provider: LlmProvider;
   model: string;
   baseUrl?: string;
+  /**
+   * Enable Anthropic prompt caching (`cache_control: { type: 'ephemeral' }`).
+   * Anthropic-only — ignored by the other providers. Recommended for every
+   * anthropic profile: the large system prompt + tool schemas (and as much of the
+   * message-history prefix as survives the pruning middleware) are re-read at ~0.1x
+   * instead of billed as full input tokens each turn.
+   */
+  cache?: boolean;
 }
 
 export type BuiltinMiddlewareId =
