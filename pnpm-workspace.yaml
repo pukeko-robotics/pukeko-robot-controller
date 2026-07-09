@@ -5,7 +5,7 @@ overrides:
   uuid: '>=11.1.1'
   # No @gaunt-sloth/* or vue-ui redirects: alpha.6 declares zod `^4.0.0` itself
   # (GS2-15 fix c), so pnpm no longer dedupes the gaunt-sloth subtree onto this
-  # repo's zod 3; and @galvanized-pukeko/vue-ui@0.1.0 is on public npm, so it
+  # repo's zod 3; and @galvanized-pukeko/vue-ui@0.1.1 is on public npm, so it
   # resolves straight from the registry. Clean public-registry install.
 
   # Dependencies pnpm is allowed to run install/build scripts for. esbuild needs
@@ -15,6 +15,6 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@gaunt-sloth/agent@2.0.0-alpha.7'
-  - '@gaunt-sloth/core@2.0.0-alpha.7'
-  - '@galvanized-pukeko/vue-ui@0.1.0'
+  - '@gaunt-sloth/agent@2.0.0-alpha.8'
+  - '@gaunt-sloth/core@2.0.0-alpha.8'
+  - '@galvanized-pukeko/vue-ui@0.1.1'
