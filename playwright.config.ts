@@ -12,7 +12,8 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:5173',
+    // OPS-8: track the shifted vite dev port (WEB_PORT); it-robot.js loads `.env`.
+    baseURL: `http://localhost:${process.env.WEB_PORT || 5173}`,
     permissions: ['camera'],
     launchOptions: {
       args: [

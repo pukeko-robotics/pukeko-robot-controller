@@ -10,9 +10,9 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "dev": "vite",
-    "dev:ag-ui": "AGUI_URL=http://localhost:3000/agents/default/run vite",
-    "server": "node --import=tsx ./server/index.ts",
-    "stub": "node --import=tsx robot-stub/index.ts",
+    "dev:ag-ui": "node --env-file-if-exists=.env node_modules/vite/bin/vite.js",
+    "server": "node --env-file-if-exists=.env --import=tsx ./server/index.ts",
+    "stub": "node --env-file-if-exists=.env --import=tsx robot-stub/index.ts",
     "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"pnpm:server\" \"pnpm:dev\"",
     "test": "vitest run",
     "e2e": "node it-robot.js",

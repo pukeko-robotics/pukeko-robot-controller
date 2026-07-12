@@ -15,7 +15,11 @@ import { loadConfig } from './loadConfig.js';
 import type { MiddlewareEntry, PukekoProfile } from '../src/lib/config.js';
 import { createLlm } from './createLlm.js';
 
-const PORT = 3000;
+// OPS-8: port + web CORS origin are env-overridable (loaded from `.env` via the
+// `--env-file-if-exists=.env` flag in the `server` npm script; inline env wins).
+// Unset falls back to today's 3000 / http://localhost:5173.
+const PORT = Number(process.env.AGUI_PORT) || 3000;
+const WEB_ORIGIN = process.env.WEB_ORIGIN || 'http://localhost:5173';
 const DEFAULT_ROBOT_HOST = '192.168.4.1';
 const DEFAULT_SYSTEM_PROMPT_FILE = 'system-prompt.md';
 const DEFAULT_SUMMARY_PROMPT_FILE = 'summarization-prompt.md';
@@ -139,7 +143,7 @@ const config = {
       filesystem: 'none',
       port: PORT,
       cors: {
-        allowOrigin: 'http://localhost:5173',
+        allowOrigin: WEB_ORIGIN,
         allowMethods: 'POST, GET, OPTIONS',
         allowHeaders: 'Content-Type, Accept',
       },

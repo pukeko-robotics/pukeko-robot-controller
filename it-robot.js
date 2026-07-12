@@ -15,8 +15,15 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// OPS-8: load the worktree-root `.env` so a shifted allocation moves every port
+// together. Inline env vars still win (loadEnvFile does not clobber process.env).
+try { process.loadEnvFile(resolve(__dirname, '.env')); } catch { /* no .env: use defaults */ }
+
 const LIVE = process.env.E2E_LIVE === '1';
-const STUB_PORT = '8080';
+const STUB_PORT = process.env.ROBOT_STUB_PORT || '8080';
+const AGUI_PORT = process.env.AGUI_PORT || '3000';
+const WEB_PORT = process.env.WEB_PORT || '5173';
 const ROBOT_HOST = `localhost:${STUB_PORT}`;
 const READY_TIMEOUT_MS = 60_000;
 
@@ -111,8 +118,8 @@ let code = 1;
 try {
   await Promise.all([
     waitForUrl(`http://${ROBOT_HOST}/`, 'robot stub'),
-    waitForUrl('http://localhost:3000/health', 'AG-UI server'),
-    waitForUrl('http://localhost:5173/', 'web client'),
+    waitForUrl(`http://localhost:${AGUI_PORT}/health`, 'AG-UI server'),
+    waitForUrl(`http://localhost:${WEB_PORT}/`, 'web client'),
   ]);
   console.log('\n[it-robot] running Playwright...\n');
   code = await new Promise((res) => {
