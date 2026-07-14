@@ -86,6 +86,131 @@ function extractText(content: BaseMessage['content']): string {
     .trim();
 }
 
+interface MaybeToolUseBlock extends MaybeBlock {
+  id?: string;
+}
+
+// Drop `tool_use` content blocks (Anthropic's native AIMessage content shape)
+// whose id is not in `keepIds`, mirroring the `.tool_calls` filter so a rebuilt
+// AIMessage never carries an unpaired tool_use in *either* representation.
+// Also reports the ids of the surviving `tool_use` blocks, so the caller can
+// keep their `tool_result`s even when the id lives only in `content` (not
+// mirrored into `.tool_calls`) — the actual Anthropic-native wire shape.
+function filterToolUseBlocks(
+  content: BaseMessage['content'],
+  keepIds: Set<string>
+): { content: BaseMessage['content']; changed: boolean; keptBlockIds: string[] } {
+  if (!Array.isArray(content)) return { content, changed: false, keptBlockIds: [] };
+  const blocks = content as MaybeToolUseBlock[];
+  const kept = blocks.filter(
+    (b) => !(b && b.type === 'tool_use' && (!b.id || !keepIds.has(b.id)))
+  );
+  const keptBlockIds = kept
+    .filter((b) => b && b.type === 'tool_use' && typeof b.id === 'string')
+    .map((b) => b.id as string);
+  if (kept.length === blocks.length) return { content, changed: false, keptBlockIds };
+  return { content: kept as unknown as BaseMessage['content'], changed: true, keptBlockIds };
+}
+
+// Remove tool-call pairs that are not complete, so the rebuilt history is always
+// Anthropic-valid (it rejects a `tool_use` that is not immediately followed by
+// its matching `tool_result` with `INVALID_TOOL_RESULTS`). The trailing, just-
+// emitted motion tool call is the common offender: its `tool_result` does not
+// exist yet at summarization time, so it can only be stripped, not paired.
+//
+// Pure and side-effect free (mirrors the pruning helpers in
+// contextPrunerMiddleware). Fully-paired histories pass through with their
+// original message instances preserved.
+export function stripUnpairedToolCalls(messages: BaseMessage[]): BaseMessage[] {
+  // A tool_call is "resolved" iff some ToolMessage carries its id.
+  const resolvedIds = new Set<string>();
+  for (const m of messages) {
+    if (isToolMessage(m)) {
+      const id = (m as ToolMessage).tool_call_id;
+      if (id) resolvedIds.add(id);
+    }
+  }
+
+  const out: BaseMessage[] = [];
+  const keptCallIds = new Set<string>();
+
+  for (const m of messages) {
+    if (isAIMessage(m)) {
+      const ai = m as AIMessage;
+      const calls = ai.tool_calls ?? [];
+      const keptCalls = calls.filter((tc) => tc.id != null && resolvedIds.has(tc.id));
+      const {
+        content: keptContent,
+        changed: contentChanged,
+        keptBlockIds,
+      } = filterToolUseBlocks(ai.content, resolvedIds);
+
+      // A surviving tool_use may live in `.tool_calls`, in the `content` blocks,
+      // or both. Track EVERY kept id from both representations so the two can't
+      // diverge — otherwise a content-block tool_use kept here whose id is not
+      // mirrored in `.tool_calls` would later have its `tool_result` dropped,
+      // re-creating the exact unpaired-tool_use INVALID_TOOL_RESULTS shape.
+      const recordKept = () => {
+        for (const tc of keptCalls) if (tc.id) keptCallIds.add(tc.id);
+        for (const id of keptBlockIds) keptCallIds.add(id);
+      };
+
+      if (keptCalls.length === calls.length && !contentChanged) {
+        recordKept();
+        out.push(m);
+        continue;
+      }
+
+      // Something was stripped. If nothing meaningful survives (no tool_calls
+      // and no text/blocks), drop the message entirely — an empty AIMessage is
+      // itself invalid for Anthropic.
+      const hasContent =
+        (typeof keptContent === 'string' && keptContent.length > 0) ||
+        (Array.isArray(keptContent) && keptContent.length > 0);
+      if (keptCalls.length === 0 && !hasContent) continue;
+
+      recordKept();
+      out.push(
+        new AIMessage({
+          content: keptContent,
+          tool_calls: keptCalls,
+          name: ai.name,
+          additional_kwargs: ai.additional_kwargs,
+          id: ai.id,
+        })
+      );
+      continue;
+    }
+
+    if (isToolMessage(m)) {
+      // Keep a tool_result only if its emitting tool_use survived above.
+      const id = (m as ToolMessage).tool_call_id;
+      if (id && keptCallIds.has(id)) out.push(m);
+      continue;
+    }
+
+    out.push(m);
+  }
+
+  return out;
+}
+
+// Assemble the exact message array sent to the summarization LLM: strip image
+// blocks, remove any unpaired tool-call pairs, then wrap with the summary system
+// prompt and the "write it now" nudge. Pure and testable without an LLM.
+export function buildSummarizationMessages(
+  messages: BaseMessage[],
+  summaryPrompt: string
+): BaseMessage[] {
+  const sanitized = messages.map(stripImageBlocks);
+  const paired = stripUnpairedToolCalls(sanitized);
+  return [
+    new SystemMessage(summaryPrompt),
+    ...paired,
+    new HumanMessage('Write the summary now.'),
+  ];
+}
+
 export interface MotionSummarizationOptions {
   llm: BaseChatModel;
   // Override for the summarization system prompt. Falls back to
@@ -114,21 +239,20 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
       if (!isMotionToolCall(last)) return undefined;
       if (pendingSummaries.has(threadId)) return undefined;
 
-      const sanitized = messages.map(stripImageBlocks);
+      // Build the LLM input off the full history: strip images AND remove any
+      // unpaired tool-call pairs (the just-emitted motion tool_use has no result
+      // yet), so Anthropic doesn't 400 with INVALID_TOOL_RESULTS.
+      const summarizationInput = buildSummarizationMessages(messages, summaryPrompt);
 
       const promise = (async () => {
         try {
           // Detach from the main agent's run config — otherwise tokens
           // streamed by this parallel call hit the now-closed StreamMessages
           // controller for the original turn and spam ERR_INVALID_STATE.
-          const result = await opts.llm.invoke(
-            [
-              new SystemMessage(summaryPrompt),
-              ...sanitized,
-              new HumanMessage('Write the summary now.'),
-            ],
-            { callbacks: [], tags: ['motion-summarization'] }
-          );
+          const result = await opts.llm.invoke(summarizationInput, {
+            callbacks: [],
+            tags: ['motion-summarization'],
+          });
           return extractText(result.content);
         } catch (err) {
           console.error('[motion-summarization] LLM call failed:', err);
