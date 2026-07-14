@@ -15,6 +15,15 @@ export const ROBOT_PRESETS: Readonly<Record<string, RobotPreset>> = Object.freez
 
 export const DEFAULT_ROBOT_PRESET_ID: string = ACEBOTT_QD021_PRESET.id;
 
+// The presets available to pick from, in registry order — each as its
+// selection `id` plus the human `name` a UI (RC-8's picker) labels it with.
+// Kept as a tiny accessor so the picker never reaches into ROBOT_PRESETS'
+// shape directly: it renders whatever this enumerates, so custom presets
+// (RC-2/RC-7) show up automatically once registered.
+export function listPresets(): { id: string; name: string }[] {
+  return Object.values(ROBOT_PRESETS).map((p) => ({ id: p.id, name: p.name }));
+}
+
 export function getRobotPreset(id: string = DEFAULT_ROBOT_PRESET_ID): RobotPreset {
   const preset = ROBOT_PRESETS[id];
   if (!preset) {

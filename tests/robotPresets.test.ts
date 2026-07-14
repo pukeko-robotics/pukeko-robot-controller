@@ -4,6 +4,7 @@ import {
   DEFAULT_ROBOT_PRESET_ID,
   getClientToolDefs,
   getRobotPreset,
+  listPresets,
 } from '../src/agent/robotPresets/index.js'
 import { createRobotTools } from '../src/agent/robotTools.js'
 
@@ -127,6 +128,16 @@ describe('ACEBOTT-QD021 preset — byte-for-byte reproduction of the pre-RC-1 to
 
   it('rejects an unknown preset id', () => {
     expect(() => getRobotPreset('NO-SUCH-PRESET')).toThrow(/Unknown robot preset/)
+  })
+})
+
+describe('listPresets — what the RC-8 picker enumerates', () => {
+  it('returns { id, name } for each registered preset, in registry order', () => {
+    expect(listPresets()).toEqual([{ id: 'ACEBOTT-QD021', name: 'Acebott QD021 (biped)' }])
+  })
+
+  it('includes the default preset id', () => {
+    expect(listPresets().map((p) => p.id)).toContain(DEFAULT_ROBOT_PRESET_ID)
   })
 })
 
