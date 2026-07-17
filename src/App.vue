@@ -28,6 +28,7 @@ import ToolBelt from './components/ToolBelt.vue'
 import RobotsBrains from './components/RobotsBrains.vue'
 import Splitter from './components/Splitter.vue'
 import { TUTOR_THEME } from './theme/robotControllerTheme.js'
+import { createToolFiringTracker } from './lib/toolFiringTracker.js'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
 // EXT-6 / PLAT-23: the Tutor zone's own root element. applyTheme is scoped to
@@ -100,32 +101,26 @@ watch(activePresetId, (id) => {
 
 const clientTools = computed(() => session.value.clientTools)
 
-// EXT-6 Tool Belt "pulse briefly when their tool fires": the name of the
-// client-fulfilled tool currently executing, or null. Wraps RobotSession's
-// real handlers (rather than inventing a fake timer) — this is the ACTUAL
-// work window (robot fetch + webcam capture/compose), which is deliberately
-// more accurate than watching vue-ui's `runState`/`statusText`: those flip
-// to 'running-tool' only for the brief SSE announcement of the tool call and
-// are already back to 'idle' by the time a client-fulfilled handler actually
-// runs (chatService's runLoop calls handlers AFTER RUN_FINISHED — see
-// ToolBelt.vue's comment for the server-fulfilled-tool fallback that DOES
-// use runState/statusText, since the browser has no handler/visibility into
-// those at all).
-const firingToolName = ref<string | null>(null)
+// EXT-6 Tool Belt "pulse briefly when their tool fires": `firingToolName` is
+// the name of the client-fulfilled tool currently executing, or null.
+// createToolFiringTracker (src/lib/toolFiringTracker.ts) wraps RobotSession's
+// real handlers — this is the ACTUAL work window (robot fetch + webcam
+// capture/compose), which is deliberately more accurate than watching
+// vue-ui's `runState`/`statusText`: those flip to 'running-tool' only for
+// the brief SSE announcement of the tool call and are already back to
+// 'idle' by the time a client-fulfilled handler actually runs (chatService's
+// runLoop calls handlers AFTER RUN_FINISHED — see ToolBelt.vue's comment for
+// the server-fulfilled-tool fallback that DOES use runState/statusText,
+// since the browser has no handler/visibility into those at all). Extracted
+// into its own module (rather than left inline here) so the fix is
+// unit-tested directly — see tests/toolFiringTracker.test.ts — instead of
+// only provable by mounting the whole app.
+const { firingToolName, wrap: wrapFiringHandler } = createToolFiringTracker()
 const clientToolHandlers = computed(() => {
   const handlers = session.value.clientToolHandlers
   const wrapped: Record<string, (args: unknown) => Promise<string>> = {}
   for (const [name, handler] of Object.entries(handlers)) {
-    wrapped[name] = async (args: unknown) => {
-      firingToolName.value = name
-      try {
-        return await handler(args)
-      } finally {
-        // Only clear if nothing newer has claimed the slot (defensive; the
-        // client tool loop runs at most one at a time in practice).
-        if (firingToolName.value === name) firingToolName.value = null
-      }
-    }
+    wrapped[name] = wrapFiringHandler(name, handler)
   }
   return wrapped
 })
