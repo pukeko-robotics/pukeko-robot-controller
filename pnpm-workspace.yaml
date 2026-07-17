@@ -3,10 +3,17 @@
 
 overrides:
   uuid: '>=11.1.1'
-  # No @gaunt-sloth/* or vue-ui redirects: alpha.6 declares zod `^4.0.0` itself
+  # No @gaunt-sloth/* redirect needed: alpha.6 declares zod `^4.0.0` itself
   # (GS2-15 fix c), so pnpm no longer dedupes the gaunt-sloth subtree onto this
-  # repo's zod 3; and @galvanized-pukeko/vue-ui@0.1.1 is on public npm, so it
-  # resolves straight from the registry. Clean public-registry install.
+  # repo's zod 3.
+  #
+  # PLAT-22 (temporary, mirrors the REL-9 pattern in reverse): published
+  # @galvanized-pukeko/vue-ui@0.1.1 predates PLAT-23's applyTheme/resetTheme
+  # API (merged on-disk 2026-07-15, not yet republished), so redirect to the
+  # sibling PLAT-22 galvanized-pukeko worktree to build against it. DROP this
+  # once vue-ui republishes with applyTheme and bump the package.json pin —
+  # same cleanup REL-9 did for the alpha.5→alpha.6 file: redirect.
+  '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui'
 
   # Dependencies pnpm is allowed to run install/build scripts for. esbuild needs
   # its postinstall to fetch its native binary; without this pnpm skips it

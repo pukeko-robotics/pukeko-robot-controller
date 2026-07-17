@@ -1,4 +1,5 @@
 import { fileURLToPath, URL } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -13,10 +14,28 @@ import vue from '@vitejs/plugin-vue'
 // the explicit `dev:ag-ui` script (which loads `.env`) flips to AG-UI mode.
 const env = loadEnv(process.env.NODE_ENV || 'development', process.cwd(), '')
 
+// EXT-6 Robot's Brains panel: bake the real behavioural system prompt (the
+// same file gaunt-sloth's `projectGuidelines` slot loads server-side, see
+// AGENTS.md) into the client bundle at build time so the panel shows the
+// Pilot's actual prompt rather than an invented placeholder. Read here
+// (Node, build-time) rather than imported into src/ — src/ is the browser
+// bundle boundary. Best-effort: an empty string if the file is ever moved,
+// so a missing file fails soft (empty panel) rather than failing the build.
+let systemPromptText = ''
+try {
+  systemPromptText = readFileSync(
+    fileURLToPath(new URL('./system-prompt.md', import.meta.url)),
+    'utf-8',
+  )
+} catch {
+  // Fall back to '' — see comment above.
+}
+
 export default defineConfig({
   plugins: [vue()],
   define: {
     __AGUI_URL__: JSON.stringify(process.env.AGUI_URL || ''),
+    __SYSTEM_PROMPT__: JSON.stringify(systemPromptText),
   },
   build: {
     outDir: fileURLToPath(new URL('dist/client', import.meta.url)),

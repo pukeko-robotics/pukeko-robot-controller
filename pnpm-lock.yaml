@@ -6,14 +6,15 @@ settings:
 
 overrides:
   uuid: '>=11.1.1'
+  '@galvanized-pukeko/vue-ui': file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui
 
 importers:
 
   .:
     dependencies:
       '@galvanized-pukeko/vue-ui':
-        specifier: ^0.1.1
-        version: 0.1.1(vue@3.5.39(typescript@5.9.3))
+        specifier: file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui
+        version: file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui(vue@3.5.39(typescript@5.9.3))
       '@gaunt-sloth/agent':
         specifier: 2.0.0-alpha.8
         version: 2.0.0-alpha.8(@bufbuild/protobuf@2.12.1)(@cfworker/json-schema@4.1.1)(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(langsmith@0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
@@ -369,8 +370,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@galvanized-pukeko/vue-ui@0.1.1':
-    resolution: {integrity: sha512-JNJeOwyQ9zui6BAUWlZI0KVvp16u+JTn0qlaoUQF2wiH2d+Xynw/OzxGrZPJWhL1YixtM3HpHrl+sQh1frNqHw==}
+  '@galvanized-pukeko/vue-ui@file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui':
+    resolution: {directory: ../galvanized-pukeko/packages/galvanized-pukeko-vue-ui, type: directory}
     peerDependencies:
       '@copilotkit/vue': ^1.60.1
       vue: ^3.5.12
@@ -2319,7 +2320,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@galvanized-pukeko/vue-ui@0.1.1(vue@3.5.39(typescript@5.9.3))':
+  '@galvanized-pukeko/vue-ui@file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui(vue@3.5.39(typescript@5.9.3))':
     dependencies:
       '@ag-ui/client': 0.0.57
       chart.js: 4.5.1
