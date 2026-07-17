@@ -217,13 +217,51 @@ onMounted(() => {
      --pk-color-primary, so this is a robot-controller-local var (per the
      brief) rather than a hardcoded hex in the rule below. */
   --rc-tutor-primary-tint: #eef2ff;
+  /* --rc-tutor-primary(-hover) — post-review fix (Mari, live-verified gap):
+     the nav header (`:deep(.nav-wrapper)` below) is a SIBLING of .tutor
+     under .robot-controller, not inside it, so it never inherits the
+     --pk-color-* tokens applyTheme wrote on the .tutor element itself (CSS
+     custom properties only cascade to descendants of the node they're set
+     on). These two vars are literal copies of
+     TUTOR_THEME['--pk-color-primary'] (#4338CA) and the brief's locked
+     hover value (#6366F1) — CSS can't import a TS module's string at build
+     time, so, same as vue-ui's own theme.ts documents doing between itself
+     and global.css, these must be kept in lock-step with
+     theme/robotControllerTheme.ts by hand. */
+  --rc-tutor-primary: #4338ca;
+  --rc-tutor-primary-hover: #6366f1;
 }
 
 .app-title {
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--main-text-color);
+  /* Post-review fix: pull the brand title into the Tutor indigo (Mari's
+     call, live-verified — was var(--main-text-color), plain near-black,
+     "no brand identity at all" in the nav header). */
+  color: var(--rc-tutor-primary, #4338ca);
   margin-left: var(--padding-third);
+}
+
+/* Nav header (PkNavHeader's `.nav-wrapper` root): spans BOTH zones — a
+   sibling of .cockpit/.tutor under .robot-controller, not nested inside
+   either, so it's outside the reach of the Tutor-scoped applyTheme call
+   (confirmed: PkNavHeader is a direct child of `.robot-controller` in the
+   template below, not of `.tutor`/`.cockpit`) — this rule cannot leak into
+   the dark Cockpit zone because `.nav-wrapper` doesn't exist inside it; the
+   two are separate DOM subtrees, not nested. Mari's call (post-review,
+   live-verified): keep the light/white background — already
+   var(--bg-input-idle) from vue-ui's own rule, untouched — but pull
+   interactive active-states into the Tutor indigo family. These three vars
+   ARE read by PkNavHeader.vue's own `.nav-link:hover/.active` and
+   `.nav-control:hover` rules (unlike the .pk-button case below, this one
+   genuinely works via var redefinition alone) — no elements using those
+   classes are rendered by this app today (only the #logo/#nav-controls
+   slots are used), so this is presentational forward-compat, not a visible
+   change today beyond .app-title above. */
+:deep(.nav-wrapper) {
+  --bg-button-nob-active: var(--rc-tutor-primary-tint, #eef2ff);
+  --border-button-nob-active: 1px solid var(--rc-tutor-primary, #4338ca);
+  --text-button-nob-active: var(--rc-tutor-primary, #4338ca);
 }
 
 .agent-label {
@@ -282,6 +320,69 @@ onMounted(() => {
   flex-direction: column;
   overflow: hidden;
   background: var(--pk-color-surface, #fff);
+  /* Post-review fix (Mari, confirmed live via computed-style inspection):
+     PLAT-23 only migrated 4 chat components (ChatInterface/ToolCallBadge)
+     onto --pk-color-* — PkButton/PkInput still read the OLD generic
+     --bg-button-…, --text-button-… and --border-input-… layer (global.css),
+     so applyTheme alone left Send/New-Conversation/the chat input unthemed.
+     Redefine the *primary-variant* vars here, scoped to .tutor, to the SAME
+     colours already applied via applyTheme — var(--pk-color-primary) /
+     var(--pk-color-on-primary) correctly resolve to the Tutor palette
+     inside .tutor (that's exactly what applyTheme wrote), so this reuses
+     the existing tokens rather than hand-typing new hex. */
+  --bg-button-prim-idle: var(--pk-color-primary);
+  --bg-button-prim-active: var(--pk-color-primary);
+  --border-button-prim-idle: var(--pk-color-primary);
+  --border-button-prim-active: var(--rc-tutor-primary-hover, #6366f1);
+  --text-button-prim-idle: var(--pk-color-on-primary);
+  --text-button-prim-active: var(--pk-color-on-primary);
+}
+
+/* The var redefinition above is necessary but NOT sufficient: verified by
+   reading source (ChatInterface.vue's <PkButton> for Send, and
+   PkNewConversationButton.vue) that NEITHER passes the `pk-button-prim` /
+   `pk-button-sec` modifier class PkButton.vue's variant rules key off — so
+   with no modifier class, nothing in PkButton.vue reads
+   --bg-button-prim-idle etc. at all, and both buttons render as bare,
+   unstyled native <button>s (which is exactly the plain-gray appearance
+   found live). Still a robot-controller-local override, not a vue-ui
+   change — vue-ui's own source is untouched; this targets the class
+   PkButton.vue already emits (`.pk-button`) from the CONSUMING app's scoped
+   style via :deep(), the same technique ChatInterface.vue itself uses for
+   its own `.stop-button` (which is why :not(.stop-button) below leaves that
+   one alone — it already has its own, more specific, danger-red rule). */
+.tutor :deep(.pk-button):not(.stop-button) {
+  background: var(--pk-color-primary, #4338ca);
+  color: var(--pk-color-on-primary, #fff);
+  border-color: var(--pk-color-primary, #4338ca);
+}
+
+/* Hover/active: background stays on the same AAA-safe fill (white text on
+   #4338CA is 7.90:1) rather than switching to the brief's LOCKED hover hex
+   (#6366F1) as the fill — white-on-#6366F1 measures 4.47:1, just under the
+   4.5:1 AA text threshold (checked with the same script as the WCAG table
+   in task-1-report.md). #6366F1 is still genuinely used, as a border/glow
+   accent (a decorative, non-text UI affordance — 4.47:1 against the white
+   page background clears the 3:1 non-text threshold easily), rather than
+   silently dropped or shipped as a marginal text-contrast fail. */
+.tutor :deep(.pk-button):not(.stop-button):hover,
+.tutor :deep(.pk-button):not(.stop-button):active {
+  border-color: var(--rc-tutor-primary-hover, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);
+}
+
+.tutor :deep(.pk-input) {
+  border-color: var(--pk-color-border, #e5e7eb);
+  /* PkInput.vue never sets `color` at all (checked its source) — the input
+     text falls through to the browser default (pure black), not the Tutor
+     text token. Set it explicitly rather than leave it as a second
+     "untouched" gap. */
+  color: var(--pk-color-text, #111827);
+}
+
+.tutor :deep(.pk-input:focus),
+.tutor :deep(.pk-input:hover:not(:disabled)) {
+  border-color: var(--pk-color-primary, #4338ca);
 }
 
 .tutor-header {
