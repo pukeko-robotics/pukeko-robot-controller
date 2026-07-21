@@ -1,5 +1,13 @@
 <script lang="ts">
 import { DEFAULT_ROBOT_PRESET_ID } from './agent/robotPresets/index.js'
+import { registerRobotToolDisplays } from './toolDisplays/index.js'
+
+// RC-14: register the robot's bespoke tool-result renderers (capture_image
+// thumbnail + motion Before/After diff) on vue-ui's PLAT-17 registry at app
+// init — module load of the component that mounts <ChatInterface>, so it runs
+// before any tool-call badge can mount. The registry is deliberately not
+// reactive (see vue-ui's toolDisplay.ts), so registration must precede render.
+registerRobotToolDisplays()
 
 // Robot preset (RC-1): which named tool set this hardware variant exposes.
 // VITE_ROBOT_PRESET / DEFAULT_ROBOT_PRESET_ID still *seed* the initial value.
