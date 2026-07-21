@@ -8,15 +8,25 @@
 // BrowserCapabilities, runMotion is now reachable (and asserted) in tests
 // without mounting the component.
 import { ref, type Ref } from 'vue';
-import type { Tool } from '@galvanized-pukeko/vue-ui';
+import {
+  captureImageResult,
+  createCaptureImageToolDeclaration,
+  type Tool,
+} from '@galvanized-pukeko/vue-ui';
 import { DEFAULT_ROBOT_PRESET_ID, getClientToolDefs } from '../agent/robotPresets/index.js';
 import type { RobotToolDef } from '../agent/robotPresets/index.js';
 import {
-  frameToEnvelope,
   runRecipe,
   type BrowserCapabilities,
   type RobotCapabilities,
 } from './interpreter.js';
+
+// The robot-flavoured model-facing description for the shared `capture_image`
+// tool (PLAT-18: declaration + handler now live in @galvanized-pukeko/vue-ui;
+// this override is the only robot-specific part left). Byte-identical to the
+// pre-PLAT-18 inline declaration so the model's prompt surface is unchanged.
+const CAPTURE_IMAGE_ROBOT_DESCRIPTION =
+  'Capture a photo from the robot webcam. Returns the current image of the robot and its surroundings as seen from above.';
 
 export interface RobotSessionOptions {
   robotHost: string;
@@ -64,33 +74,23 @@ export class RobotSession {
     return runRecipe(def, args, this.caps);
   }
 
-  // The generic single-frame capability (capture_image) — not a preset tool,
-  // shared across every preset, so it stays here rather than in recipe data.
-  async captureImage(): Promise<string> {
-    if (!this.caps.isReady()) {
-      return JSON.stringify({ error: 'Webcam not initialized' });
-    }
-    const envelope = frameToEnvelope(this.caps.captureFrame());
-    if (envelope) return JSON.stringify(envelope);
-    return JSON.stringify({ error: 'Failed to capture frame. Is the camera active?' });
+  // The generic single-frame capability (capture_image). PLAT-18: delegates to
+  // the shared capture layer in @galvanized-pukeko/vue-ui — `this.caps`
+  // (isReady + captureFrame) already satisfies its ImageCaptureSource shape.
+  // The envelope contract ({mimeType,data}/{error} + the exact error strings)
+  // is frozen there (RC-14 renderers key on it).
+  captureImage(): Promise<string> {
+    return captureImageResult(this.caps);
   }
 
-  // The AG-UI run-input tool declarations fed to <ChatInterface> — capture_image
-  // plus the active preset's client-fulfilled motion tools, in preset order.
-  // Same shape App.vue used to build inline (RC-1's client<->server parity is
-  // preserved: name/description/parameters come straight from the preset).
+  // The AG-UI run-input tool declarations fed to <ChatInterface> — the shared
+  // capture_image (robot-flavoured description) plus the active preset's
+  // client-fulfilled motion tools, in preset order. Same shape App.vue used to
+  // build inline (RC-1's client<->server parity is preserved:
+  // name/description/parameters come straight from the preset).
   get clientTools(): Tool[] {
     return [
-      {
-        name: 'capture_image',
-        description:
-          'Capture a photo from the robot webcam. Returns the current image of the robot and its surroundings as seen from above.',
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
+      createCaptureImageToolDeclaration({ description: CAPTURE_IMAGE_ROBOT_DESCRIPTION }),
       ...this.motionToolDefs.map((def) => ({
         name: def.name,
         // clientDescription (when set) is authoritative for what the model

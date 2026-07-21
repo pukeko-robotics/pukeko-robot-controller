@@ -8,6 +8,7 @@
 // no Vue/DOM dependency of its own — every side-effecting capability is
 // injected via `RobotCapabilities` — so it is unit-testable without mounting
 // the SFC (the whole point of the node).
+import { frameToEnvelope } from '@galvanized-pukeko/vue-ui';
 import type { RobotToolDef, RecipeStep, HttpPath } from './../agent/robotPresets/types.js';
 
 // The browser-side capabilities the interpreter needs. App.vue supplies these
@@ -28,16 +29,11 @@ export interface RobotCapabilities {
 export type BrowserCapabilities = Omit<RobotCapabilities, 'robotUrl' | 'robotHost'>;
 
 // Parse a `{ mimeType, data }` image envelope out of a `data:` URL, or null if
-// the string isn't a well-formed base64 image data URL. Pure; moved here from
-// App.vue verbatim so both the interpreter and RobotSession can reuse it.
-export function frameToEnvelope(
-  frame: string | null
-): { mimeType: string; data: string } | null {
-  if (!frame) return null;
-  const match = frame.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,([^"]*)$/);
-  if (!match) return null;
-  return { mimeType: match[1], data: match[2] };
-}
+// the string isn't a well-formed base64 image data URL. Promoted verbatim into
+// @galvanized-pukeko/vue-ui with the shared capture_image tool (PLAT-18);
+// re-exported here so the interpreter's recipe steps and existing robot-side
+// importers keep their path.
+export { frameToEnvelope };
 
 // Clamp a tool's `steps` argument to the firmware-supported 1..10 integer
 // range, defaulting to 1. Pure; moved here from App.vue verbatim.

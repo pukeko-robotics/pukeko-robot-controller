@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 import { startAgUiServer } from '@gaunt-sloth/agent';
 import { DEFAULT_CONFIG, type GthConfig } from '@gaunt-sloth/core/config.js';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { captureImageTool } from '../src/agent/captureImageTool.js';
 import { createFrontendImageInjectionMiddleware } from '../src/agent/frontendImageInjectionMiddleware.js';
 import { createMotionSummarizationMiddleware } from '../src/agent/motionSummarizationMiddleware.js';
 import { createContextPrunerMiddleware } from '../src/agent/contextPrunerMiddleware.js';
@@ -127,7 +126,13 @@ const config = {
   // slot (a configurable filename), letting us use a clean `system-prompt.md`
   // instead of the hardcoded `.gsloth.system.md`.
   projectGuidelines: profile.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_FILE,
-  tools: [captureImageTool, ...createRobotTools(robotHost, robotPreset)],
+  // PLAT-18: no static capture_image stub any more. The UI declares the shared
+  // client tool (from @galvanized-pukeko/vue-ui) in every AG-UI run-input, and
+  // the gaunt-sloth server binds run-input tools as metadata.client interrupt
+  // stubs itself (apiAgUiModule buildClientToolStub) — the static stub here was
+  // already being filtered out in favour of that dynamic binding on every UI
+  // run. Server-side tools below are the real (server-fulfilled) robot tools.
+  tools: [...createRobotTools(robotHost, robotPreset)],
   middleware,
   // Route the AG-UI backend to the lean agent (plain createAgent, no deepagents).
   // The deep backend's /large_tool_results offload writes oversized tool results
