@@ -29,7 +29,7 @@ export default defineConfig({
       observability: OBSERVABILITY,
       lazyToolRecovery: { force: true },
       // Both prompt files default to the repo root and may be overridden per profile:
-      // systemPromptPath: 'system-prompt.md',        // behavioural prompt (gaunt-sloth projectGuidelines)
+      // systemPromptPath: 'system-prompt.md',        // behavioural prompt (gaunt-sloth prompts.guidelines)
       // summaryPromptPath: 'summarization-prompt.md', // context-pruner's lazy-summary prompt
       // robot: { host: '192.168.4.1', preset: 'ACEBOTT-QD021' }, // overridable with ROBOT_HOST / ROBOT_PRESET
     },

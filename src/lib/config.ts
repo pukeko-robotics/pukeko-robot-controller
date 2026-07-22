@@ -66,7 +66,7 @@ export interface LazyToolRecoveryProfileOpts {
 export interface PukekoProfile {
   llm: LlmSpec;
   // Path to the agent's behavioural system prompt, resolved from the project
-  // root. Wired into gaunt-sloth's `projectGuidelines` slot. Defaults to
+  // root. Wired into gaunt-sloth's `prompts.guidelines` slot. Defaults to
   // `system-prompt.md`.
   systemPromptPath?: string;
   // Path to the motion-summarization prompt, resolved from the project root.
