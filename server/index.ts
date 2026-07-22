@@ -122,10 +122,11 @@ const config = {
   // active model (provider comes from the model's _llmType()).
   modelDisplayName: profile.llm.model,
   noDefaultPrompts: true,
-  // The behavioural system prompt rides in gaunt-sloth's `projectGuidelines`
-  // slot (a configurable filename), letting us use a clean `system-prompt.md`
+  // The behavioural system prompt rides in gaunt-sloth's `prompts.guidelines`
+  // slot (GS2-43: replaces the removed flat `projectGuidelines` key; a bare
+  // string is `{ path }` shorthand), letting us use a clean `system-prompt.md`
   // instead of the hardcoded `.gsloth.system.md`.
-  projectGuidelines: profile.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_FILE,
+  prompts: { guidelines: profile.systemPromptPath ?? DEFAULT_SYSTEM_PROMPT_FILE },
   // PLAT-18: no static capture_image stub any more. The UI declares the shared
   // client tool (from @galvanized-pukeko/vue-ui) in every AG-UI run-input, and
   // the gaunt-sloth server binds run-input tools as metadata.client interrupt

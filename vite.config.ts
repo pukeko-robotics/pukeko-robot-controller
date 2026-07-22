@@ -15,7 +15,7 @@ import vue from '@vitejs/plugin-vue'
 const env = loadEnv(process.env.NODE_ENV || 'development', process.cwd(), '')
 
 // EXT-6 Robot's Brains panel: bake the real behavioural system prompt (the
-// same file gaunt-sloth's `projectGuidelines` slot loads server-side, see
+// same file gaunt-sloth's `prompts.guidelines` slot loads server-side, see
 // AGENTS.md) into the client bundle at build time so the panel shows the
 // Pilot's actual prompt rather than an invented placeholder. Read here
 // (Node, build-time) rather than imported into src/ — src/ is the browser
