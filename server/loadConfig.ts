@@ -17,7 +17,11 @@ const CONFIG_FILENAMES = [
 
 const FALLBACK_PROFILE: PukekoProfile = {
   llm: { provider: 'ollama', model: 'gemma4:31b' },
-  middleware: ['frontend-images', 'motion-summary'],
+  // RC-16: 'context-pruner' (not 'motion-summary') — RC-9/RC-12 moved every
+  // named profile off motion-summary; the fallback now matches, so a fresh
+  // checkout with no config file never routes through the deprecated
+  // motion-summarization middleware.
+  middleware: ['frontend-images', 'context-pruner'],
 };
 
 const FALLBACK_CONFIG: PukekoConfig = {

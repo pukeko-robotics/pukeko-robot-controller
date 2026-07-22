@@ -35,6 +35,16 @@ describe('loadConfig', () => {
     expect(resolved.profile.llm.model).toBe('gemma4:31b')
   })
 
+  it('RC-16: the no-config fallback profile uses context-pruner, never motion-summary', async () => {
+    // RC-9/RC-12 moved every named profile off the deprecated motion-summary
+    // middleware; the fallback must match, or a fresh checkout on Anthropic
+    // routes through the middleware and dies on its history rewrite.
+    const resolved = await loadConfig(tmpDir)
+    expect(resolved.configPath).toBeNull()
+    expect(resolved.profile.middleware).toEqual(['frontend-images', 'context-pruner'])
+    expect(resolved.profile.middleware).not.toContain('motion-summary')
+  })
+
   it('reads pukeko.config.json', async () => {
     writeFileSync(
       join(tmpDir, 'pukeko.config.json'),

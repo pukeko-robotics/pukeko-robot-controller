@@ -291,9 +291,21 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
       const summaryBody = pinned
         ? `Summary of prior steps:\n${summary}\n\n${pinned}`
         : `Summary of prior steps:\n${summary}`;
+      // RC-16: the summary rides as a clearly-marked HumanMessage, NEVER a
+      // SystemMessage. This message lands at index ≥ 1 of the rebuilt history,
+      // and @langchain/anthropic rejects any non-first system message
+      // ("System messages are only permitted as the first passed message." —
+      // the PLAT-13 crash). Hoisting into a first-position system message is
+      // no fix either: the lean backend's composed prompt is passed to
+      // createAgent as `systemPrompt` (applied at model-call time, outside
+      // state.messages), so a state-level SystemMessage would still land
+      // behind it, i.e. non-first. A user-role recap is valid at any index on
+      // every backend (GS2-64 content-preserving precedent), and consecutive
+      // user turns already occur live (ToolMessage → injected composite
+      // HumanMessage), so this introduces no new wire shape.
       const replaced: BaseMessage[] = [
         ...head,
-        new SystemMessage(summaryBody),
+        new HumanMessage(`[Motion summary]\n${summaryBody}`),
         ...tail,
       ];
 

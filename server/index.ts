@@ -44,7 +44,9 @@ console.log(
 );
 
 function buildMiddleware(entries: MiddlewareEntry[] | undefined, llm: BaseChatModel, profile: PukekoProfile): unknown[] {
-  const list = entries ?? ['frontend-images', 'motion-summary'];
+  // RC-16: the inline default mirrors FALLBACK_PROFILE in loadConfig.ts —
+  // context-pruner, not the deprecated motion-summary (RC-9/RC-12 alignment).
+  const list = entries ?? ['frontend-images', 'context-pruner'];
   const built: unknown[] = [];
   const enabled: string[] = [];
   for (const entry of list) {

@@ -160,9 +160,12 @@ describe('motionSummarizationMiddleware', () => {
     // Next entry is the original user message verbatim.
     expect(updated[1]).toBeInstanceOf(HumanMessage)
     expect((updated[1] as HumanMessage).content).toBe('Get the robot to the red cone.')
-    // Then the summary as a SystemMessage.
-    expect(updated[2]).toBeInstanceOf(SystemMessage)
-    expect((updated[2] as SystemMessage).content).toContain(SUMMARY_TEXT)
+    // Then the summary as a clearly-marked HumanMessage (RC-16: a SystemMessage
+    // here sits at index ≥ 1, which @langchain/anthropic rejects outright).
+    expect(updated[2]).toBeInstanceOf(HumanMessage)
+    expect(updated[2]).not.toBeInstanceOf(SystemMessage)
+    expect((updated[2] as HumanMessage).content).toContain('[Motion summary]')
+    expect((updated[2] as HumanMessage).content).toContain(SUMMARY_TEXT)
     // Then the most recent motion turn (AIMessage with motion tool call, ToolMessage, composite HumanMessage).
     expect(updated[3]).toBe(motionAi)
     expect(updated[4]).toBe(motionTool)
@@ -275,7 +278,8 @@ describe('motionSummarizationMiddleware', () => {
     const result = await before({ messages: [...messagesAfter, motionTool, composite] }, runtime)
 
     const updated = (result as { messages: BaseMessage[] }).messages
-    const summaryMsg = updated[2] as SystemMessage
+    const summaryMsg = updated[2] as HumanMessage
+    expect(summaryMsg).toBeInstanceOf(HumanMessage)
     expect(summaryMsg.content).toContain('Recent motions (newest last):')
     expect(summaryMsg.content).toContain('turn_right (steps=3) (pending')
   })
@@ -445,6 +449,141 @@ describe('motionSummarizationMiddleware', () => {
         (m) => isAIMessage(m) && ((m as AIMessage).tool_calls ?? []).some((tc) => tc.id === 'tc-motion')
       )
       expect(hasMotion).toBe(false)
+    })
+  })
+
+  // ── RC-16: no mid-history SystemMessage, ever ─────────────────────────────
+  // @langchain/anthropic throws "System messages are only permitted as the
+  // first passed message." for a SystemMessage at index ≥ 1 — the PLAT-13
+  // crash. Every branch of beforeModel must therefore rebuild a history with
+  // no SystemMessage past index 0; the summary rides as a marked HumanMessage.
+  describe('RC-16 mid-history SystemMessage fix', () => {
+    function systemIndices(messages: BaseMessage[]): number[] {
+      return messages
+        .map((m, i) => (m instanceof SystemMessage ? i : -1))
+        .filter((i) => i >= 0)
+    }
+
+    // The PLAT-13 crash shape: a read_status tool turn BEFORE the first motion,
+    // so the rewrite window (firstHumanIdx+1 .. lastMotionIdx) is non-empty.
+    function crashShapedHistory() {
+      const user = new HumanMessage('Drive the robot to the red cone.')
+      const statusAi = new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'read_status', args: {}, id: 'tc-status' }],
+      })
+      const statusTool = new ToolMessage({
+        content: JSON.stringify({ battery: '7.4V', ok: true }),
+        tool_call_id: 'tc-status',
+        name: 'read_status',
+      })
+      const thinking = new AIMessage('Status fine. Turning right to scan.')
+      const motionAi = new AIMessage({
+        content: '',
+        tool_calls: [{ name: 'turn_right', args: { steps: 3 }, id: 'tc-motion' }],
+      })
+      const motionTool = new ToolMessage({
+        content: JSON.stringify({ mimeType: 'image/jpeg', data: 'B', motion: 'turn_right (steps=3)' }),
+        tool_call_id: 'tc-motion',
+        name: 'turn_right',
+      })
+      const composite = new HumanMessage({
+        content: [{ type: 'text', text: 'Before/After frames for turn_right (steps=3).' }, imageBlock()],
+      })
+      const atMotion: BaseMessage[] = [user, statusAi, statusTool, thinking, motionAi]
+      return { atMotion, nextTurn: [...atMotion, motionTool, composite] as BaseMessage[] }
+    }
+
+    it('summary-applied branch (pinned state present): no SystemMessage at index ≥ 1', async () => {
+      const llm = makeStubLlm()
+      const mw = createMotionSummarizationMiddleware({ llm }) as HookContainer
+      const after = getHook(mw.afterModel)
+      const before = getHook(mw.beforeModel)
+
+      const { atMotion, nextTurn } = crashShapedHistory()
+      await after({ messages: atMotion }, runtime)
+      const result = await before({ messages: nextTurn }, runtime)
+
+      expect(result).toBeTruthy()
+      const updated = (result as { messages: BaseMessage[] }).messages
+      expect(updated[0]).toBeInstanceOf(RemoveMessage)
+      const rebuilt = updated.slice(1)
+      // The invariant Anthropic enforces.
+      expect(systemIndices(rebuilt)).toEqual([])
+      // The summary content still lands, as a marked HumanMessage, with the
+      // pinned state (afterModel logged the motion, so it is present here).
+      const summaryMsg = rebuilt.find(
+        (m) => m instanceof HumanMessage && String(m.content).startsWith('[Motion summary]')
+      )
+      expect(summaryMsg).toBeDefined()
+      expect((summaryMsg as HumanMessage).content).toContain(SUMMARY_TEXT)
+      expect((summaryMsg as HumanMessage).content).toContain('Recent motions (newest last):')
+    })
+
+    it('summary-applied branch (no pinned state): no SystemMessage at index ≥ 1', async () => {
+      const llm = makeStubLlm()
+      const mw = createMotionSummarizationMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      // Seed the pending summary directly (no afterModel), so the motion log is
+      // empty and formatPinnedState() returns '' — the pinned-less branch.
+      __pendingSummariesForTest.set('test-thread', Promise.resolve(SUMMARY_TEXT))
+      const { nextTurn } = crashShapedHistory()
+      const result = await before({ messages: nextTurn }, runtime)
+
+      expect(result).toBeTruthy()
+      const rebuilt = (result as { messages: BaseMessage[] }).messages.slice(1)
+      expect(systemIndices(rebuilt)).toEqual([])
+      const summaryMsg = rebuilt.find(
+        (m) => m instanceof HumanMessage && String(m.content).startsWith('[Motion summary]')
+      )
+      expect(summaryMsg).toBeDefined()
+      expect((summaryMsg as HumanMessage).content).toContain(SUMMARY_TEXT)
+    })
+
+    it('a pre-existing first-position SystemMessage stays at index 0 only', async () => {
+      const llm = makeStubLlm()
+      const mw = createMotionSummarizationMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      __pendingSummariesForTest.set('test-thread', Promise.resolve(SUMMARY_TEXT))
+      const { nextTurn } = crashShapedHistory()
+      const withSystem = [new SystemMessage('agent system prompt'), ...nextTurn]
+      const result = await before({ messages: withSystem }, runtime)
+
+      expect(result).toBeTruthy()
+      const rebuilt = (result as { messages: BaseMessage[] }).messages.slice(1)
+      // The leading system message survives in place; no OTHER system message
+      // appears anywhere past index 0.
+      expect(systemIndices(rebuilt)).toEqual([0])
+      expect((rebuilt[0] as SystemMessage).content).toBe('agent system prompt')
+    })
+
+    it('guard branch preserved: motion directly after the first human → no rewrite', async () => {
+      const llm = makeStubLlm()
+      const mw = createMotionSummarizationMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      // lastMotionIdx === firstHumanIdx + 1 → the existing guard must bail.
+      __pendingSummariesForTest.set('test-thread', Promise.resolve(SUMMARY_TEXT))
+      const messages: BaseMessage[] = [
+        new HumanMessage('go'),
+        new AIMessage({ content: '', tool_calls: [{ name: 'turn_right', args: { steps: 1 }, id: 'm' }] }),
+        new ToolMessage({ content: '{}', tool_call_id: 'm', name: 'turn_right' }),
+      ]
+      const result = await before({ messages }, runtime)
+      expect(result).toBeUndefined()
+    })
+
+    it('empty-summary branch: no rewrite, no SystemMessage introduced', async () => {
+      const llm = makeStubLlm()
+      const mw = createMotionSummarizationMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      __pendingSummariesForTest.set('test-thread', Promise.resolve(''))
+      const { nextTurn } = crashShapedHistory()
+      const result = await before({ messages: nextTurn }, runtime)
+      expect(result).toBeUndefined()
     })
   })
 })
