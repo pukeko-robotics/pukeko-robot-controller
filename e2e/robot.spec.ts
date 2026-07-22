@@ -96,8 +96,12 @@ test.describe('Robot Controller (browser)', () => {
     expect(await diffImage.getAttribute('src')).toMatch(/^data:image\//);
 
     // The 0.0.56 fetch regression (and any send failure) would surface here.
+    // PLAT-13: '[HeadlessChat] Run error/failed' is the headless engine's
+    // run-error line (vue-ui subscribes to the agent stream — CopilotKit core
+    // otherwise swallows failed runs silently), so a mid-run RUN_ERROR now
+    // trips this net exactly as the bespoke 'Agent execution failed' did.
     const fatal = consoleErrors.filter((e) =>
-      /Illegal invocation|Error sending message|Agent execution failed/i.test(e)
+      /Illegal invocation|Error sending message|Agent execution failed|\[HeadlessChat\] Run (error|failed)/i.test(e)
     );
     expect(fatal, `unexpected console errors:\n${fatal.join('\n')}`).toHaveLength(0);
   });
