@@ -8,7 +8,6 @@ import {
   isAIMessage,
   isHumanMessage,
   isToolMessage,
-  isSystemMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
 import { REMOVE_ALL_MESSAGES } from '@langchain/langgraph';
@@ -385,11 +384,33 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
             // what keeps context-pruner from physically repeating an
             // already-attempted motion after a prune.
             const pinned = formatPinnedState(threadId);
-            const summaryMsg = new SystemMessage(
-              pinned
-                ? `Summary of prior steps:\n${summaryText}\n\n${pinned}`
-                : `Summary of prior steps:\n${summaryText}`
-            );
+            const summaryBody = pinned
+              ? `Summary of prior steps:\n${summaryText}\n\n${pinned}`
+              : `Summary of prior steps:\n${summaryText}`;
+            // RC-17 (mirrors RC-16's motion-summarization fix): the summary
+            // rides as a clearly-marked HumanMessage, NEVER a SystemMessage.
+            // It lands at index ≥ 1 of the rebuilt history, and
+            // @langchain/anthropic rejects any non-first system message
+            // ("System messages are only permitted as the first passed
+            // message."). Hoisting to a first-position SystemMessage is no fix
+            // either: the lean backend's composed prompt is passed to
+            // createAgent as `systemPrompt` (applied at model-call time,
+            // outside state.messages), so a state-level SystemMessage would
+            // still land behind it, i.e. non-first. A user-role recap is valid
+            // at any index on every backend, and consecutive user turns
+            // already occur live (ToolMessage → injected composite
+            // HumanMessage), so this introduces no new wire shape.
+            //
+            // Replace-not-accumulate: there is no marker- or role-based
+            // detection of a previous summary anywhere in this middleware —
+            // folding is purely positional. On a later cycle this message sits
+            // at firstHumanIdx + 1, inside the next headSlice
+            // (firstHumanIdx + 1 .. lastMotionAiIdx), so it is fed to the
+            // summarizer and then discarded when the head is rebuilt around
+            // the single new summary. The original first HumanMessage is
+            // always preserved in place, so this summary can never become the
+            // "first human" anchor itself.
+            const summaryMsg = new HumanMessage(`[Context summary]\n${summaryBody}`);
             rebuilt = [
               ...pruned.slice(0, firstHumanIdx + 1),
               summaryMsg,

@@ -12,6 +12,7 @@ import {
   estimateTokens,
   __inflightSummariesForTest,
 } from '../src/agent/contextPrunerMiddleware.js'
+import { __resetMotionLogForTest } from '../src/agent/motionLog.js'
 
 interface HookContainer {
   beforeModel?: unknown
@@ -51,6 +52,9 @@ function motionResultJson(motion: string, dataLen = 100): string {
 
 beforeEach(() => {
   __inflightSummariesForTest.clear()
+  // motionLog is shared module state; reset it so the pinned-state branch
+  // exercised below (via afterModel) can't bleed motions into later tests.
+  __resetMotionLogForTest()
 })
 
 describe('contextPrunerMiddleware — mechanical prune', () => {
@@ -302,9 +306,12 @@ describe('contextPrunerMiddleware — threshold summarization', () => {
     // First non-Remove entry is the original user message verbatim.
     expect(updated[1]).toBeInstanceOf(HumanMessage)
     expect((updated[1] as HumanMessage).content).toBe('Get the robot to the cone.')
-    // Then the summary system message.
-    expect(updated[2]).toBeInstanceOf(SystemMessage)
-    expect((updated[2] as SystemMessage).content).toContain(SUMMARY_TEXT)
+    // Then the summary as a clearly-marked HumanMessage (RC-17: a SystemMessage
+    // here sits at index ≥ 1, which @langchain/anthropic rejects outright).
+    expect(updated[2]).toBeInstanceOf(HumanMessage)
+    expect(updated[2]).not.toBeInstanceOf(SystemMessage)
+    expect((updated[2] as HumanMessage).content).toContain('[Context summary]')
+    expect((updated[2] as HumanMessage).content).toContain(SUMMARY_TEXT)
     // Tail is the motion turn (AIMessage + ToolMessage + injected composite).
     expect(updated[3]).toBe(motionAi)
     expect(updated[4]).toBeInstanceOf(ToolMessage)
@@ -410,5 +417,215 @@ describe('contextPrunerMiddleware — estimateTokens', () => {
       tool_calls: [{ name: 'turn_right', args: { steps: 3 }, id: 'x' }],
     })
     expect(estimateTokens([withTool], 800)).toBeGreaterThan(estimateTokens([plain], 800))
+  })
+})
+
+// ── RC-17: no mid-history SystemMessage, ever ───────────────────────────────
+// @langchain/anthropic throws "System messages are only permitted as the first
+// passed message." for a SystemMessage at index ≥ 1 — the PLAT-13 crash, the
+// exact defect RC-16 fixed in motion-summarization. Every branch of the
+// context-pruner's beforeModel that rebuilds a history must leave no
+// SystemMessage past index 0; the summary rides as a marked HumanMessage. The
+// two-cycle case additionally proves the marked HumanMessage summary is FOLDED
+// (replaced), not accumulated, on a later prune.
+describe('contextPrunerMiddleware — RC-17 mid-history SystemMessage fix', () => {
+  function systemIndices(messages: BaseMessage[]): number[] {
+    return messages
+      .map((m, i) => (m instanceof SystemMessage ? i : -1))
+      .filter((i) => i >= 0)
+  }
+
+  function summaryMessages(messages: BaseMessage[]): HumanMessage[] {
+    return messages.filter(
+      (m): m is HumanMessage =>
+        m instanceof HumanMessage && String(m.content).startsWith('[Context summary]')
+    )
+  }
+
+  // Force the summarize branch regardless of real token counts: threshold = 1.
+  const FORCE_SUMMARIZE = { maxContextTokens: 10, summarizeAtFraction: 0.1 } as const
+
+  // The PLAT-13 crash shape: a read_status tool turn BEFORE the first motion,
+  // so the rewrite window (firstHumanIdx+1 .. lastMotionAiIdx) is non-empty.
+  function crashShapedHistory() {
+    const user = new HumanMessage('Drive the robot to the red cone.')
+    const statusAi = new AIMessage({
+      content: '',
+      tool_calls: [{ name: 'read_status', args: {}, id: 'tc-status' }],
+    })
+    const statusTool = new ToolMessage({
+      content: JSON.stringify({ battery: '7.4V', ok: true }),
+      tool_call_id: 'tc-status',
+      name: 'read_status',
+    })
+    const thinking = new AIMessage('Status fine. Turning right to scan.')
+    const motionAi = new AIMessage({
+      content: '',
+      tool_calls: [{ name: 'turn_right', args: { steps: 3 }, id: 'tc-motion' }],
+    })
+    const motionTool = new ToolMessage({
+      content: JSON.stringify({ mimeType: 'image/jpeg', data: 'B', motion: 'turn_right (steps=3)' }),
+      tool_call_id: 'tc-motion',
+      name: 'turn_right',
+    })
+    const composite = new HumanMessage({
+      content: [{ type: 'text', text: 'Before/After frames for turn_right (steps=3).' }, imageBlock()],
+    })
+    const atMotion: BaseMessage[] = [user, statusAi, statusTool, thinking, motionAi]
+    return { atMotion, nextTurn: [...atMotion, motionTool, composite] as BaseMessage[] }
+  }
+
+  it('summary-applied branch (pinned state present): no SystemMessage at index ≥ 1', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const after = getHook(mw.afterModel)
+    const before = getHook(mw.beforeModel)
+
+    const { atMotion, nextTurn } = crashShapedHistory()
+    // afterModel observes the just-emitted motion, so formatPinnedState() is
+    // non-empty on the following beforeModel.
+    await after({ messages: atMotion }, runtime)
+    const result = await before({ messages: nextTurn }, runtime)
+
+    expect(result).toBeTruthy()
+    const updated = (result as { messages: BaseMessage[] }).messages
+    expect(updated[0]).toBeInstanceOf(RemoveMessage)
+    const rebuilt = updated.slice(1)
+    // The invariant Anthropic enforces.
+    expect(systemIndices(rebuilt)).toEqual([])
+    // The summary lands as a marked HumanMessage carrying both the LLM summary
+    // and the deterministic pinned motion log.
+    const summaries = summaryMessages(rebuilt)
+    expect(summaries).toHaveLength(1)
+    expect(String(summaries[0].content)).toContain(SUMMARY_TEXT)
+    expect(String(summaries[0].content)).toContain('Recent motions (newest last):')
+  })
+
+  it('summary-applied branch (no pinned state): no SystemMessage at index ≥ 1', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // No afterModel call → motion log empty → formatPinnedState() === '' (the
+    // pinned-less branch).
+    const { nextTurn } = crashShapedHistory()
+    const result = await before({ messages: nextTurn }, runtime)
+
+    expect(result).toBeTruthy()
+    const rebuilt = (result as { messages: BaseMessage[] }).messages.slice(1)
+    expect(systemIndices(rebuilt)).toEqual([])
+    const summaries = summaryMessages(rebuilt)
+    expect(summaries).toHaveLength(1)
+    expect(String(summaries[0].content)).toContain(SUMMARY_TEXT)
+    expect(String(summaries[0].content)).not.toContain('Recent motions')
+  })
+
+  it('a pre-existing first-position SystemMessage stays at index 0 only', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const { nextTurn } = crashShapedHistory()
+    const withSystem = [new SystemMessage('agent system prompt'), ...nextTurn]
+    const result = await before({ messages: withSystem }, runtime)
+
+    expect(result).toBeTruthy()
+    const rebuilt = (result as { messages: BaseMessage[] }).messages.slice(1)
+    // The leading system message survives in place; no OTHER system message
+    // appears anywhere past index 0.
+    expect(systemIndices(rebuilt)).toEqual([0])
+    expect((rebuilt[0] as SystemMessage).content).toBe('agent system prompt')
+    expect(summaryMessages(rebuilt)).toHaveLength(1)
+  })
+
+  it('two prune cycles: the summary is folded, not accumulated', async () => {
+    // Distinct summary text per call so "no accumulation" is a real content
+    // discrimination, not just a count check.
+    let n = 0
+    const invoke = vi.fn(async () => ({ content: `summary ${++n}: robot scanned then moved.` }))
+    const llm = { invoke } as unknown as Parameters<typeof createContextPrunerMiddleware>[0]['llm'] & {
+      invoke: ReturnType<typeof vi.fn>
+    }
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // Cycle 1.
+    const { nextTurn } = crashShapedHistory()
+    const r1 = await before({ messages: nextTurn }, runtime)
+    const rebuilt1 = (r1 as { messages: BaseMessage[] }).messages.filter(
+      (m) => !(m instanceof RemoveMessage)
+    )
+    const c1 = summaryMessages(rebuilt1)
+    expect(c1).toHaveLength(1)
+    expect(String(c1[0].content)).toContain('summary 1')
+
+    // Cycle 2: the model emits a second motion off the rebuilt state; the prior
+    // summary (now at firstHumanIdx+1) falls inside the next head slice.
+    const motionAi2 = new AIMessage({
+      content: '',
+      tool_calls: [{ name: 'move_forward', args: { steps: 2 }, id: 'tc-motion-2' }],
+    })
+    const motionTool2 = new ToolMessage({
+      content: JSON.stringify({ mimeType: 'image/jpeg', data: 'C', motion: 'move_forward (steps=2)' }),
+      tool_call_id: 'tc-motion-2',
+      name: 'move_forward',
+    })
+    const composite2 = new HumanMessage({
+      content: [{ type: 'text', text: 'Before/After frames for move_forward (steps=2).' }, imageBlock()],
+    })
+    const cycle2Input = [...rebuilt1, motionAi2, motionTool2, composite2]
+    const r2 = await before({ messages: cycle2Input }, runtime)
+    const rebuilt2 = (r2 as { messages: BaseMessage[] }).messages.filter(
+      (m) => !(m instanceof RemoveMessage)
+    )
+
+    // No accumulation: exactly ONE summary, carrying cycle-2's text and NOT
+    // cycle-1's; and still no SystemMessage at index ≥ 1.
+    const c2 = summaryMessages(rebuilt2)
+    expect(c2).toHaveLength(1)
+    expect(String(c2[0].content)).toContain('summary 2')
+    expect(String(c2[0].content)).not.toContain('summary 1')
+    expect(systemIndices(rebuilt2)).toEqual([])
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it('guard branch preserved: motion directly after the first human → no rewrite', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // lastMotionAiIdx === firstHumanIdx + 1 → the summarize window is empty and
+    // nothing else needs pruning (plain ToolMessage, no image data) → undefined.
+    const messages: BaseMessage[] = [
+      new HumanMessage('go'),
+      new AIMessage({ content: '', tool_calls: [{ name: 'turn_right', args: { steps: 1 }, id: 'm' }] }),
+      new ToolMessage({ content: '{}', tool_call_id: 'm', name: 'turn_right' }),
+    ]
+    const result = await before({ messages }, runtime)
+    expect(result).toBeUndefined()
+    expect(llm.invoke).not.toHaveBeenCalled()
+  })
+
+  it('empty-summary branch: summary not applied, no SystemMessage introduced', async () => {
+    const llm = makeStubLlm('')
+    const mw = createContextPrunerMiddleware({ llm, ...FORCE_SUMMARIZE }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // The summarizer returns '' → the summary is NOT applied. Mechanical prune
+    // still runs (the crash history's ToolMessage carries image data), so a
+    // rewrite may be emitted, but it must carry no summary and no mid-history
+    // SystemMessage.
+    const { nextTurn } = crashShapedHistory()
+    const result = await before({ messages: nextTurn }, runtime)
+
+    expect(llm.invoke).toHaveBeenCalledTimes(1)
+    const rebuilt =
+      result === undefined
+        ? []
+        : (result as { messages: BaseMessage[] }).messages.filter(
+            (m) => !(m instanceof RemoveMessage)
+          )
+    expect(systemIndices(rebuilt)).toEqual([])
+    expect(summaryMessages(rebuilt)).toHaveLength(0)
   })
 })
