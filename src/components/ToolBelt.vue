@@ -14,15 +14,16 @@
 //    fetch + webcam capture/compose), not a guess.
 //  - Server-fulfilled tools (stop/read_distance/read_status/finish_task):
 //    the browser has no handler for these at all, so there's no equivalent
-//    signal to wrap. The best available fallback is vue-ui's already-exported
-//    `runState`/`statusText` singletons (the same ones PkProgressBar reads),
-//    which flip to 'running-tool' / `Running ${toolCallName}…` for the brief
-//    window the SSE stream announces the call. It's a coarser, shorter-lived
-//    signal than the client-side one (see the report), but it's real
-//    reactive state, not invented — and it's the only one the browser has
-//    for these four tools.
+//    signal to wrap. The best available signal is the SSE announcement
+//    window in the AG-UI event stream (TOOL_CALL_START → the next lifecycle
+//    event). PLAT-13: on the headless engine App.vue derives that window
+//    from the CopilotKit-managed agent's own event subscription (see
+//    lib/toolAnnouncementTracker.ts — the same events the retired bespoke
+//    `runState`/`statusText` fallback was fed by) and passes the announced
+//    tool name down as `announcedTool`. It's a coarser, shorter-lived
+//    signal than the client-side one, but it's real reactive state, not
+//    invented — and it's the only one the browser has for these four tools.
 import { computed } from 'vue'
-import { runState, statusText } from '@galvanized-pukeko/vue-ui'
 
 export interface ToolBeltItem {
   name: string
@@ -32,6 +33,7 @@ export interface ToolBeltItem {
 const props = defineProps<{
   tools: ToolBeltItem[]
   firingTool?: string | null
+  announcedTool?: string | null
 }>()
 
 // Glyphs are decorative (aria-hidden); the accessible name is the tool's
@@ -55,7 +57,7 @@ function iconFor(name: string): string {
 
 function isFiring(name: string): boolean {
   if (props.firingTool === name) return true
-  return runState.value === 'running-tool' && statusText.value.includes(name)
+  return props.announcedTool === name
 }
 
 const items = computed(() =>

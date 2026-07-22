@@ -4,9 +4,11 @@ import { registerRobotToolDisplays } from './toolDisplays/index.js'
 
 // RC-14: register the robot's bespoke tool-result renderers (capture_image
 // thumbnail + motion Before/After diff) on vue-ui's PLAT-17 registry at app
-// init — module load of the component that mounts <ChatInterface>, so it runs
+// init — module load of the component that mounts the chat engine, so it runs
 // before any tool-call badge can mount. The registry is deliberately not
 // reactive (see vue-ui's toolDisplay.ts), so registration must precede render.
+// PLAT-13: the registry is globalThis-anchored, so the same registration
+// reaches ToolCallBadge whichever vue-ui bundle (root or /copilot) renders it.
 registerRobotToolDisplays()
 
 // Robot preset (RC-1): which named tool set this hardware variant exposes.
@@ -21,14 +23,24 @@ export function resolveSeedPreset(raw: string | undefined): string {
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import {
   applyTheme,
-  ChatInterface,
+  configService,
   PkLogo,
   PkNavHeader,
   PkWebcamPanel,
 } from '@galvanized-pukeko/vue-ui'
+// PLAT-13: the headless CopilotKit engine. HeadlessChat is vue-ui's embeddable
+// bespoke-styled chat surface (PkInput/PkButton/bubbles/ToolCallBadge) driven
+// entirely by CopilotKit composables — the surviving engine PLAT-12 made the
+// web-client default and PLAT-18 proved live against a real gth AG-UI server.
+// The provider/agent wiring mirrors vue-ui's HeadlessChatApp (self-managed
+// AG-UI HttpAgent, no CopilotKit cloud runtime), inlined here because the
+// robot embeds the chat INSIDE its own Cockpit/Tutor chrome rather than under
+// the full-app PkAppChrome wrapper.
+import { CopilotKitProvider, HttpAgent } from '@copilotkit/vue/v2'
+import { HeadlessChat } from '@galvanized-pukeko/vue-ui/copilot'
 import { getRobotPreset, listPresets } from './agent/robotPresets/index.js'
 import { RobotSession } from './robotSession/index.js'
 import PresetPicker from './components/PresetPicker.vue'
@@ -37,6 +49,7 @@ import RobotsBrains from './components/RobotsBrains.vue'
 import Splitter from './components/Splitter.vue'
 import { TUTOR_THEME } from './theme/robotControllerTheme.js'
 import { createToolFiringTracker } from './lib/toolFiringTracker.js'
+import { createToolAnnouncementTracker } from './lib/toolAnnouncementTracker.js'
 
 const webcamPanelRef = ref<InstanceType<typeof PkWebcamPanel> | null>(null)
 // EXT-6 / PLAT-23: the Tutor zone's own root element. applyTheme is scoped to
@@ -98,40 +111,79 @@ function makeSession(presetId: string): RobotSession {
 // RC-8: switching preset re-initialises the RobotSession (presetId/motionToolDefs
 // are readonly by design), so the new preset's client-fulfilled motion tools
 // take effect without a page reload. A mid-conversation switch resets the robot
-// session — the brief sanctions that; the paired `:key` on <ChatInterface> below
-// remounts it with the fresh tools and a clean conversation. The provider/model
-// label is preset-independent, so re-fetch it after each re-init.
+// session — the brief sanctions that; the paired `:key` on <CopilotKitProvider>
+// below remounts the provider + HeadlessChat with a FRESH HttpAgent (empty
+// message log = clean conversation) and the new session's frontendTools —
+// the headless analogue of the bespoke path's `:key` remount of
+// <ChatInterface>. The provider/model label is preset-independent, so
+// re-fetch it after each re-init.
 const session = shallowRef(makeSession(activePresetId.value))
+
+// PLAT-13: the AG-UI agent the CopilotKit provider manages ("self-managed
+// HttpAgent" — the same wire the bespoke chatService spoke: AG-UI over
+// HTTP/SSE, no CopilotKit cloud runtime). Created here (not inside vue-ui's
+// HeadlessChatApp shell) so App.vue holds the instance and can subscribe to
+// its event stream for the Tool Belt's server-tool signal below. Same URL
+// resolution as HeadlessChatApp: the build-time define, else config.json
+// (loaded by main.ts before mount).
+function makeAgent(): HttpAgent {
+  const url =
+    (typeof __AGUI_URL__ !== 'undefined' && __AGUI_URL__) || configService.get().agUiUrl
+  return new HttpAgent({ url })
+}
+const agent = shallowRef(makeAgent())
+const selfManagedAgents = computed(() => ({ default: agent.value }))
+
 watch(activePresetId, (id) => {
   session.value = makeSession(id)
+  agent.value = makeAgent()
   session.value.loadAgentInfo()
 })
-
-const clientTools = computed(() => session.value.clientTools)
 
 // EXT-6 Tool Belt "pulse briefly when their tool fires": `firingToolName` is
 // the name of the client-fulfilled tool currently executing, or null.
 // createToolFiringTracker (src/lib/toolFiringTracker.ts) wraps RobotSession's
 // real handlers — this is the ACTUAL work window (robot fetch + webcam
-// capture/compose), which is deliberately more accurate than watching
-// vue-ui's `runState`/`statusText`: those flip to 'running-tool' only for
-// the brief SSE announcement of the tool call and are already back to
-// 'idle' by the time a client-fulfilled handler actually runs (chatService's
-// runLoop calls handlers AFTER RUN_FINISHED — see ToolBelt.vue's comment for
-// the server-fulfilled-tool fallback that DOES use runState/statusText,
-// since the browser has no handler/visibility into those at all). Extracted
-// into its own module (rather than left inline here) so the fix is
-// unit-tested directly — see tests/toolFiringTracker.test.ts — instead of
-// only provable by mounting the whole app.
+// capture/compose), which is deliberately more accurate than the SSE
+// announcement window: the stream announces a client tool's call and is
+// already finished by the time CopilotKit actually runs the handler (the
+// C-a interrupt flow fulfils client tools AFTER the run's RUN_FINISHED —
+// see ToolBelt.vue's comment for the server-fulfilled-tool signal that DOES
+// use the announcement window, since the browser has no handler/visibility
+// into those at all). Extracted into its own module (rather than left
+// inline here) so the fix is unit-tested directly — see
+// tests/toolFiringTracker.test.ts — instead of only provable by mounting
+// the whole app.
 const { firingToolName, wrap: wrapFiringHandler } = createToolFiringTracker()
-const clientToolHandlers = computed(() => {
-  const handlers = session.value.clientToolHandlers
-  const wrapped: Record<string, (args: unknown) => Promise<string>> = {}
-  for (const [name, handler] of Object.entries(handlers)) {
-    wrapped[name] = wrapFiringHandler(name, handler)
-  }
-  return wrapped
-})
+
+// PLAT-13: the session's client tools in CopilotKit `frontendTools` shape
+// (declarations byte-identical to the bespoke run-input ones — see
+// RobotSession.frontendTools), each handler wrapped by the firing tracker.
+// Computed-per-session, so the provider (remounted per preset via `:key`)
+// always receives one stable array — CopilotKitProvider's contract.
+const frontendTools = computed(() =>
+  session.value.frontendTools({ wrapHandler: wrapFiringHandler })
+)
+
+// PLAT-13: the Tool Belt's signal for SERVER-fulfilled tools — the SSE
+// announcement window (TOOL_CALL_START → next lifecycle event), read off the
+// agent's own event subscription (lib/toolAnnouncementTracker.ts). This is
+// the same window the bespoke `runState`/`statusText` fallback exposed, now
+// sourced without chatService. Re-subscribed whenever a preset switch swaps
+// in a fresh agent.
+const { announcedToolName, subscriber: announcementSubscriber } =
+  createToolAnnouncementTracker()
+let announcementSub: { unsubscribe: () => void } | null = null
+watch(
+  agent,
+  (a) => {
+    announcementSub?.unsubscribe()
+    announcementSub = a.subscribe(announcementSubscriber)
+  },
+  { immediate: true }
+)
+onUnmounted(() => announcementSub?.unsubscribe())
+
 // agentLabel is a Ref *inside* the session; unwrap it explicitly (Vue only
 // auto-unwraps one level, so a computed-wrapping-a-ref would render an object).
 const agentLabel = computed(() => session.value.agentLabel.value)
@@ -163,7 +215,11 @@ onMounted(() => {
       <!-- EXT-6 Cockpit: camera viewport + Robot's Brains, with the Tool Belt
            on its LEFT edge. Dark zone — see theme/robotControllerTheme.ts. -->
       <section class="cockpit" :style="{ flexBasis: splitPercent + '%' }">
-        <ToolBelt :tools="beltTools" :firing-tool="firingToolName" />
+        <ToolBelt
+          :tools="beltTools"
+          :firing-tool="firingToolName"
+          :announced-tool="announcedToolName"
+        />
         <div class="cockpit-main">
           <section class="camera-viewport" aria-label="Camera Feed">
             <PkWebcamPanel ref="webcamPanelRef" />
@@ -186,11 +242,19 @@ onMounted(() => {
           <span class="tutor-name">Tutor</span>
           <span class="tutor-badge">Online</span>
         </div>
-        <ChatInterface
+        <!-- PLAT-13: the headless CopilotKit engine. `:key` remounts the whole
+             provider subtree on a preset switch — fresh HttpAgent (clean
+             conversation) + the new session's frontendTools, mirroring the
+             bespoke remount of <ChatInterface>. `a2ui-target="chat"` keeps the
+             Tutor pane a single chat column (the robot agent emits no A2UI
+             surfaces; the default 'panel' target would reserve a split pane). -->
+        <CopilotKitProvider
           :key="activePresetId"
-          :clientTools="clientTools"
-          :clientToolHandlers="clientToolHandlers"
-        />
+          :self-managed-agents="selfManagedAgents"
+          :frontend-tools="frontendTools"
+        >
+          <HeadlessChat agent-id="default" a2ui-target="chat" />
+        </CopilotKitProvider>
       </section>
     </main>
   </div>
@@ -329,10 +393,12 @@ onMounted(() => {
   overflow: hidden;
   background: var(--pk-color-surface, #fff);
   /* Post-review fix (Mari, confirmed live via computed-style inspection):
-     PLAT-23 only migrated 4 chat components (ChatInterface/ToolCallBadge)
-     onto --pk-color-* — PkButton/PkInput still read the OLD generic
+     PLAT-23 only migrated the chat components (incl. ToolCallBadge) onto
+     --pk-color-* — PkButton/PkInput still read the OLD generic
      --bg-button-…, --text-button-… and --border-input-… layer (global.css),
      so applyTheme alone left Send/New-Conversation/the chat input unthemed.
+     Still true on the headless engine: HeadlessChat renders the same
+     PkButton/PkInput primitives.
      Redefine the *primary-variant* vars here, scoped to .tutor, to the SAME
      colours already applied via applyTheme — var(--pk-color-primary) /
      var(--pk-color-on-primary) correctly resolve to the Tutor palette
@@ -347,16 +413,16 @@ onMounted(() => {
 }
 
 /* The var redefinition above is necessary but NOT sufficient: verified by
-   reading source (ChatInterface.vue's <PkButton> for Send, and
-   PkNewConversationButton.vue) that NEITHER passes the `pk-button-prim` /
-   `pk-button-sec` modifier class PkButton.vue's variant rules key off — so
-   with no modifier class, nothing in PkButton.vue reads
-   --bg-button-prim-idle etc. at all, and both buttons render as bare,
-   unstyled native <button>s (which is exactly the plain-gray appearance
-   found live). Still a robot-controller-local override, not a vue-ui
-   change — vue-ui's own source is untouched; this targets the class
+   reading source (HeadlessChat.vue's <PkButton> for Send — same as the
+   bespoke ChatInterface's was — and PkNewConversationButton.vue) that
+   NEITHER passes the `pk-button-prim` / `pk-button-sec` modifier class
+   PkButton.vue's variant rules key off — so with no modifier class, nothing
+   in PkButton.vue reads --bg-button-prim-idle etc. at all, and both buttons
+   render as bare, unstyled native <button>s (which is exactly the plain-gray
+   appearance found live). Still a robot-controller-local override, not a
+   vue-ui change — vue-ui's own source is untouched; this targets the class
    PkButton.vue already emits (`.pk-button`) from the CONSUMING app's scoped
-   style via :deep(), the same technique ChatInterface.vue itself uses for
+   style via :deep(), the same technique HeadlessChat.vue itself uses for
    its own `.stop-button` (which is why :not(.stop-button) below leaves that
    one alone — it already has its own, more specific, danger-red rule). */
 .tutor :deep(.pk-button):not(.stop-button) {
@@ -432,11 +498,12 @@ onMounted(() => {
   margin-left: 0.25rem;
 }
 
-/* ChatInterface's own scoped style hardcodes `height: 100%`, which assumed
-   being the sole child of its panel (the old layout). It now shares .tutor
-   with .tutor-header above it, so override height→flex here to share space
-   correctly instead of overflowing past the header. */
-.tutor :deep(.chat-interface) {
+/* HeadlessChat's own scoped style hardcodes `height: 100%` (exactly as the
+   bespoke ChatInterface did), which assumes being the sole child of its
+   panel. It shares .tutor with .tutor-header above it, so override
+   height→flex here to share space correctly instead of overflowing past the
+   header. */
+.tutor :deep(.pk-headless-chat) {
   flex: 1 1 0;
   height: auto;
   min-height: 0;

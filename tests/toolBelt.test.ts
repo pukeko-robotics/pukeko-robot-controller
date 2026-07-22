@@ -1,32 +1,22 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 import ToolBelt from '../src/components/ToolBelt.vue'
-import { runState, statusText } from '@galvanized-pukeko/vue-ui'
 
 // EXT-6 acceptance tests for the Tool Belt's pulse-active state — the two
 // signals `isFiring()` combines (see ToolBelt.vue's header comment):
 // (1) the precise `firingTool` prop App.vue derives from wrapping
 // RobotSession's real client-tool handlers (see toolFiringTracker.test.ts
 // for that mechanism's own regression coverage), and (2) the coarser
-// vue-ui `runState`/`statusText` fallback used for the four server-fulfilled
-// tools the browser has no handler for at all.
-//
-// `runState`/`statusText` are real module-level singletons exported by
-// @galvanized-pukeko/vue-ui (chatService.ts) — the same ones ToolBelt.vue
-// itself imports, not a mock — so every test resets them afterward to avoid
-// leaking state across tests.
+// `announcedTool` prop for the four server-fulfilled tools the browser has
+// no handler for at all — the SSE announcement window App.vue derives from
+// the agent's event subscription (PLAT-13; see
+// toolAnnouncementTracker.test.ts for that mechanism's own coverage).
 
 const TOOLS = [
   { name: 'move_forward', label: 'move forward' },
   { name: 'turn_left', label: 'turn left' },
   { name: 'read_status', label: 'read status' },
 ]
-
-afterEach(() => {
-  runState.value = 'idle'
-  statusText.value = ''
-})
 
 describe('ToolBelt — rendering', () => {
   it('renders one item per tool, with its label as the title', () => {
@@ -87,41 +77,41 @@ describe('ToolBelt — pulse-active state (firingTool prop)', () => {
   })
 })
 
-describe('ToolBelt — pulse-active state (runState/statusText fallback, for server-fulfilled tools)', () => {
-  it('marks the named tool active when runState is running-tool and statusText names it', async () => {
-    const wrapper = mount(ToolBelt, { props: { tools: TOOLS } }) // no firingTool prop at all
-    runState.value = 'running-tool'
-    statusText.value = 'Running read_status…'
-    await nextTick()
-
+describe('ToolBelt — pulse-active state (announcedTool prop, for server-fulfilled tools)', () => {
+  it('marks the named tool active while its SSE announcement window is open', () => {
+    // no firingTool prop at all — the server-tool signal stands alone
+    const wrapper = mount(ToolBelt, { props: { tools: TOOLS, announcedTool: 'read_status' } })
     const items = wrapper.findAll('.tool-belt-item')
     const activeFlags = items.map((i) => i.classes('active'))
     expect(activeFlags).toEqual([false, false, true])
   })
 
-  it('does not mark anything active when runState is idle, even if statusText still names a tool', async () => {
-    const wrapper = mount(ToolBelt, { props: { tools: TOOLS } })
-    runState.value = 'idle'
-    statusText.value = 'Running read_status…' // stale text from a just-finished run
-    await nextTick()
+  it('marks nothing active once the window closes (announcedTool back to null)', async () => {
+    const wrapper = mount(ToolBelt, { props: { tools: TOOLS, announcedTool: 'read_status' } })
+    await wrapper.setProps({ announcedTool: null })
     expect(wrapper.findAll('.tool-belt-item.active')).toHaveLength(0)
   })
 
-  it('does not mark anything active when running but statusText names a different tool', async () => {
-    const wrapper = mount(ToolBelt, { props: { tools: TOOLS } })
-    runState.value = 'running-tool'
-    statusText.value = 'Running some_other_tool…'
-    await nextTick()
+  it('marks nothing active when the announced tool matches nothing in the list', () => {
+    const wrapper = mount(ToolBelt, {
+      props: { tools: TOOLS, announcedTool: 'some_other_tool' },
+    })
     expect(wrapper.findAll('.tool-belt-item.active')).toHaveLength(0)
   })
 
-  it('the firingTool prop takes effect independently of the runState fallback', async () => {
-    const wrapper = mount(ToolBelt, { props: { tools: TOOLS, firingTool: 'move_forward' } })
-    runState.value = 'idle' // fallback signal says nothing is running
-    statusText.value = ''
-    await nextTick()
-
+  it('the firingTool prop takes effect independently of the announcedTool signal', () => {
+    const wrapper = mount(ToolBelt, {
+      props: { tools: TOOLS, firingTool: 'move_forward', announcedTool: null },
+    })
     const items = wrapper.findAll('.tool-belt-item')
     expect(items.map((i) => i.classes('active'))).toEqual([true, false, false])
+  })
+
+  it('both signals can be active at once (client handler + a later announcement)', () => {
+    const wrapper = mount(ToolBelt, {
+      props: { tools: TOOLS, firingTool: 'move_forward', announcedTool: 'read_status' },
+    })
+    const items = wrapper.findAll('.tool-belt-item')
+    expect(items.map((i) => i.classes('active'))).toEqual([true, false, true])
   })
 })
