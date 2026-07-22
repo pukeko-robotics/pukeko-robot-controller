@@ -51,6 +51,16 @@ export type ClientToolHandler = (args: unknown) => Promise<string>;
 // client-tool args browser-side either (CopilotKit parses the raw JSON args
 // itself, and the recipe interpreter's `coerceSteps` clamps out-of-range
 // input), so validating here would CHANGE behaviour, not preserve it.
+//
+// WARNING (review M1): `createToolSchema` post-processes this emission before
+// it hits the wire — it strips a top-level `$schema`, recursively DELETES
+// every `additionalProperties` key, and force-defaults `type`/`properties`.
+// That is a no-op for today's preset schemas (none use those keys), but a
+// future preset that sets e.g. `additionalProperties: false` would silently
+// lose it on the wire: byte-identity would break with all tests green except
+// the wire-shape test in tests/robotSession.test.ts, which replicates that
+// post-processing to pin the actual declaration. Revisit both if a preset
+// ever needs those keys.
 function jsonSchemaAsParameters(
   jsonSchema: Record<string, unknown>
 ): NonNullable<VueFrontendTool['parameters']> {

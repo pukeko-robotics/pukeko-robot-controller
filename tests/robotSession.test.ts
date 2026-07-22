@@ -401,6 +401,45 @@ describe('RobotSession', () => {
     }
   })
 
+  it('frontendTools pins the WIRE shape through createToolSchema post-processing (review M1)', () => {
+    // Replicates @copilotkit/core@1.61.0's (internal, unexported)
+    // createToolSchema: take the Standard-JSON-Schema emission, strip a
+    // top-level $schema, force-default type/properties, then recursively
+    // DELETE every `additionalProperties`. Asserting THROUGH this pins the
+    // actual run-input declaration, not just the input() emission — a future
+    // preset using $schema/additionalProperties would fail here instead of
+    // silently losing wire byte-identity.
+    function stripAdditionalProperties(schema: unknown): void {
+      if (!schema || typeof schema !== 'object') return
+      if (Array.isArray(schema)) return schema.forEach(stripAdditionalProperties)
+      const record = schema as Record<string, unknown>
+      if (record.additionalProperties !== undefined) delete record.additionalProperties
+      for (const value of Object.values(record)) stripAdditionalProperties(value)
+    }
+    function createToolSchemaReplica(parameters: unknown): Record<string, unknown> {
+      const std = (
+        parameters as { '~standard': { jsonSchema: { input: (o: unknown) => unknown } } }
+      )['~standard']
+      const rawSchema = std.jsonSchema.input({ target: 'draft-07' }) as Record<string, unknown>
+      const { $schema: _dropped, ...schema } = rawSchema
+      if (typeof schema.type !== 'string') schema.type = 'object'
+      if (typeof schema.properties !== 'object' || schema.properties === null)
+        schema.properties = {}
+      stripAdditionalProperties(schema)
+      return schema
+    }
+
+    const s = session()
+    const fts = s.frontendTools()
+    for (const [i, ft] of fts.entries()) {
+      const wire = createToolSchemaReplica(ft.parameters)
+      // The post-processed wire declaration must equal the bespoke-declared
+      // JSON Schema byte-for-byte (today's presets use none of the keys the
+      // post-processing touches, so it must be a no-op).
+      expect(wire, ft.name).toEqual(s.clientTools[i].parameters)
+    }
+  })
+
   it('frontendTools handlers run the real fulfilment (motion recipe + capture envelope)', async () => {
     const s = session()
     const byName = Object.fromEntries(s.frontendTools().map((t) => [t.name, t]))

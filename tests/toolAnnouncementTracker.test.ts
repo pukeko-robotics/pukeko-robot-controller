@@ -38,6 +38,16 @@ describe('createToolAnnouncementTracker', () => {
     expect(t.announcedToolName.value).toBeNull()
   })
 
+  it('closes the window when the model starts REASONING (bespoke: → "Thinking…", review M2)', () => {
+    // Bespoke chatService also left 'running-tool' on REASONING_MESSAGE_START
+    // — matters on reasoning-emitting models (e.g. the Ollama/gemma path),
+    // where the pulse would otherwise outlive its bespoke window.
+    const t = createToolAnnouncementTracker()
+    t.subscriber.onToolCallStartEvent(start('read_distance'))
+    t.subscriber.onReasoningMessageStartEvent()
+    expect(t.announcedToolName.value).toBeNull()
+  })
+
   it('closes the window on run finished / failed / finalized (bespoke: → idle)', () => {
     for (const end of ['onRunFinishedEvent', 'onRunFailed', 'onRunFinalized'] as const) {
       const t = createToolAnnouncementTracker()

@@ -29,6 +29,7 @@ export interface ToolAnnouncementSubscriber {
   onToolCallStartEvent(params: { event: { toolCallName: string } }): void
   onToolCallResultEvent(): void
   onTextMessageStartEvent(): void
+  onReasoningMessageStartEvent(): void
   onRunFinishedEvent(): void
   onRunFailed(): void
   onRunFinalized(): void
@@ -58,6 +59,7 @@ export function createToolAnnouncementTracker(): ToolAnnouncementTracker {
       // The same transitions that ended the bespoke 'running-tool' state:
       onToolCallResultEvent: clear, // result arrived → back to 'waiting'
       onTextMessageStartEvent: clear, // model is talking again → 'streaming'
+      onReasoningMessageStartEvent: clear, // model is thinking → 'streaming'
       onRunFinishedEvent: clear, // run over (incl. the client-tool interrupt)
       onRunFailed: clear,
       onRunFinalized: clear,
