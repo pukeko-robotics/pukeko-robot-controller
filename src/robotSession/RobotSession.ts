@@ -1,7 +1,8 @@
 // RobotSession (RC-7): the unit-testable service extracted out of App.vue.
 // It owns everything that used to live inline in the SFC — robotUrl, the
-// recipe interpreter, runMotion/capture_image fulfilment, the AG-UI clientTools
-// + handlers the <ChatInterface> is fed, and the /info agent-label fetch —
+// recipe interpreter, runMotion/capture_image fulfilment, the client tool
+// declarations + handlers the chat engine is fed (PLAT-13: as CopilotKit
+// `frontendTools` for the headless surface), and the /info agent-label fetch —
 // leaving App.vue to only instantiate this, supply the browser capabilities
 // (webcam ref + fetch), and render. Mirrors how galvanized-pukeko factors its
 // chatService.ts / configService.ts. Because every side effect is injected via
@@ -13,6 +14,7 @@ import {
   createCaptureImageToolDeclaration,
   type Tool,
 } from '@galvanized-pukeko/vue-ui';
+import type { VueFrontendTool } from '@copilotkit/vue/v2';
 import { DEFAULT_ROBOT_PRESET_ID, getClientToolDefs } from '../agent/robotPresets/index.js';
 import type { RobotToolDef } from '../agent/robotPresets/index.js';
 import {
@@ -27,6 +29,50 @@ import {
 // pre-PLAT-18 inline declaration so the model's prompt surface is unchanged.
 const CAPTURE_IMAGE_ROBOT_DESCRIPTION =
   'Capture a photo from the robot webcam. Returns the current image of the robot and its surroundings as seen from above.';
+
+// A client-tool handler as RobotSession exposes it (and as the bespoke path
+// consumed it): parsed args in, JSON envelope string out.
+export type ClientToolHandler = (args: unknown) => Promise<string>;
+
+// PLAT-13: adapt one of this session's AG-UI tool declarations (a hand-written
+// JSON Schema `parameters` value) into the `parameters` shape CopilotKit's
+// `FrontendTool` takes — a Standard Schema. CopilotKit serializes that schema
+// into the AG-UI run-input tool declaration via `createToolSchema`, which
+// PREFERS the Standard *JSON Schema* V1 protocol
+// (`schema['~standard'].jsonSchema.input({target})`) over converting a zod
+// schema. Handing it the preset's own JSON Schema through that protocol keeps
+// the model-facing declaration BYTE-IDENTICAL to what the bespoke path sent —
+// RC-1's client-authoritative schema/description text (see acebottQd021.ts's
+// header on why the client text is load-bearing) — instead of drifting to a
+// zod-derived serialization of the *server* schema. `input()` returns a clone
+// so CopilotKit's post-processing can never mutate the preset data.
+//
+// `validate` is deliberately accept-all: the bespoke engine never validated
+// client-tool args browser-side either (CopilotKit parses the raw JSON args
+// itself, and the recipe interpreter's `coerceSteps` clamps out-of-range
+// input), so validating here would CHANGE behaviour, not preserve it.
+//
+// WARNING (review M1): `createToolSchema` post-processes this emission before
+// it hits the wire — it strips a top-level `$schema`, recursively DELETES
+// every `additionalProperties` key, and force-defaults `type`/`properties`.
+// That is a no-op for today's preset schemas (none use those keys), but a
+// future preset that sets e.g. `additionalProperties: false` would silently
+// lose it on the wire: byte-identity would break with all tests green except
+// the wire-shape test in tests/robotSession.test.ts, which replicates that
+// post-processing to pin the actual declaration. Revisit both if a preset
+// ever needs those keys.
+function jsonSchemaAsParameters(
+  jsonSchema: Record<string, unknown>
+): NonNullable<VueFrontendTool['parameters']> {
+  return {
+    '~standard': {
+      version: 1,
+      vendor: 'pukeko-robot-controller',
+      validate: (value: unknown) => ({ value: value as Record<string, unknown> }),
+      jsonSchema: { input: () => structuredClone(jsonSchema) },
+    },
+  } as unknown as NonNullable<VueFrontendTool['parameters']>;
+}
 
 export interface RobotSessionOptions {
   robotHost: string;
@@ -83,11 +129,13 @@ export class RobotSession {
     return captureImageResult(this.caps);
   }
 
-  // The AG-UI run-input tool declarations fed to <ChatInterface> — the shared
-  // capture_image (robot-flavoured description) plus the active preset's
-  // client-fulfilled motion tools, in preset order. Same shape App.vue used to
-  // build inline (RC-1's client<->server parity is preserved:
-  // name/description/parameters come straight from the preset).
+  // The AG-UI run-input tool declarations — the shared capture_image
+  // (robot-flavoured description) plus the active preset's client-fulfilled
+  // motion tools, in preset order. Same shape App.vue used to build inline
+  // (RC-1's client<->server parity is preserved: name/description/parameters
+  // come straight from the preset). PLAT-13: no longer handed to a chat
+  // component directly — `frontendTools` below folds these declarations and
+  // `clientToolHandlers` into the CopilotKit registration shape.
   get clientTools(): Tool[] {
     return [
       createCaptureImageToolDeclaration({ description: CAPTURE_IMAGE_ROBOT_DESCRIPTION }),
@@ -102,7 +150,7 @@ export class RobotSession {
   }
 
   // Handlers for the tools above, keyed by name.
-  get clientToolHandlers(): Record<string, (args: unknown) => Promise<string>> {
+  get clientToolHandlers(): Record<string, ClientToolHandler> {
     return {
       capture_image: () => this.captureImage(),
       ...Object.fromEntries(
@@ -114,6 +162,37 @@ export class RobotSession {
         })
       ),
     };
+  }
+
+  // PLAT-13: the CopilotKit registration of this session's client tools — the
+  // exact `clientTools` declarations above folded together with their
+  // `clientToolHandlers`, in the `frontendTools` shape `CopilotKitProvider`
+  // takes. CopilotKit declares these in every AG-UI run-input; the gaunt-sloth
+  // server binds each as a `metadata.client` interrupt stub, suspends the graph
+  // at the call, CopilotKit runs the handler and re-runs the agent with the
+  // result as a trailing `tool` message, and the server resumes the suspended
+  // run (the C-a flow PLAT-18 proved live). `wrapHandler` lets the host wrap
+  // each real handler — App.vue passes the EXT-6 tool-firing tracker so the
+  // Tool Belt pulse spans the handler's actual work window, exactly as it
+  // wrapped `clientToolHandlers` on the bespoke path.
+  //
+  // Build this ONCE per session and hand the same array to the provider:
+  // CopilotKitProvider requires `frontendTools` to be a stable array (App.vue
+  // remounts the provider per preset switch, so per-session is stable enough).
+  frontendTools(options?: {
+    wrapHandler?: (name: string, handler: ClientToolHandler) => ClientToolHandler;
+  }): VueFrontendTool[] {
+    const wrap = options?.wrapHandler ?? ((_name, handler) => handler);
+    const handlers = this.clientToolHandlers;
+    return this.clientTools.map((tool) => {
+      const handler = wrap(tool.name, handlers[tool.name]);
+      return {
+        name: tool.name,
+        description: tool.description,
+        parameters: jsonSchemaAsParameters(tool.parameters as Record<string, unknown>),
+        handler: (args: Record<string, unknown>) => handler(args),
+      };
+    });
   }
 
   // Provider/model label fetched live from the AG-UI server's /info endpoint so

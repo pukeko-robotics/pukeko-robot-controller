@@ -6,6 +6,10 @@ import { test, expect, type ConsoleMessage } from '@playwright/test';
 // harness uses a real LLM — the same flow still holds (the agent is prompted to
 // move once and finish; live models routinely capture an image first, and the
 // RC-14 image assertions below only run on badges that exist).
+//
+// PLAT-13: the Tutor chat is now vue-ui's headless CopilotKit surface
+// (HeadlessChat inside a CopilotKitProvider) — selectors follow its
+// data-testids; the tool badges are the same shared ToolCallBadge as before.
 test.describe('Robot Controller (browser)', () => {
   let consoleErrors: string[] = [];
 
@@ -15,11 +19,11 @@ test.describe('Robot Controller (browser)', () => {
       if (m.type() === 'error') consoleErrors.push(m.text());
     });
     await page.goto('/');
-    await expect(page.locator('.chat-interface')).toBeVisible();
+    await expect(page.locator('[data-testid="pk-headless-chat"]')).toBeVisible();
   });
 
   test('drives a motion tool round-trip and finalizes', async ({ page }) => {
-    const input = page.locator('input[name="chat-input"]');
+    const input = page.locator('[data-testid="pk-headless-input"]');
     await input.fill('Move forward one step, then finish the task.');
     await input.press('Enter');
 
@@ -34,11 +38,30 @@ test.describe('Robot Controller (browser)', () => {
       page.locator('.tool-call-badge', { hasText: 'move_forward' })
     ).toBeVisible({ timeout: 30_000 });
 
-    // The run reaches its terminal tool and finalizes (no lingering stream).
+    // The run reaches its terminal tool and FINALIZES cleanly (RC-6: no
+    // headless reintroduction of the returnDirect non-termination bug).
     await expect(
       page.locator('.tool-call-badge', { hasText: 'finish_task' })
     ).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator('.message.ai.streaming')).toHaveCount(0, { timeout: 15_000 });
+    // Idle again: HeadlessChat renders its Stop button only while a run is in
+    // flight — the headless equivalent of "no lingering .streaming bubble".
+    await expect(
+      page.locator('[data-testid="pk-headless-chat"] .stop-button')
+    ).toHaveCount(0, { timeout: 15_000 });
+    // No repeated/empty assistant bubbles after finalization (the RC-6
+    // symptom): every rendered assistant bubble carries actual content.
+    const aiBubbles = page.locator('.message.ai .message-content');
+    for (let i = 0; i < (await aiBubbles.count()); i++) {
+      await expect(aiBubbles.nth(i)).not.toBeEmpty();
+    }
+    // ...and the transcript has settled: exactly one finish_task badge, and no
+    // new assistant bubbles appear after the run went idle.
+    await expect(
+      page.locator('.tool-call-badge', { hasText: 'finish_task' })
+    ).toHaveCount(1);
+    const settledCount = await page.locator('.message.ai').count();
+    await page.waitForTimeout(1_500);
+    expect(await page.locator('.message.ai').count()).toBe(settledCount);
 
     // ── RC-14: expanding the vision/motion tool calls shows the actual
     // pictures, not a base64 blob or a bare params line. ──────────────────
@@ -73,8 +96,12 @@ test.describe('Robot Controller (browser)', () => {
     expect(await diffImage.getAttribute('src')).toMatch(/^data:image\//);
 
     // The 0.0.56 fetch regression (and any send failure) would surface here.
+    // PLAT-13: '[HeadlessChat] Run error/failed' is the headless engine's
+    // run-error line (vue-ui subscribes to the agent stream — CopilotKit core
+    // otherwise swallows failed runs silently), so a mid-run RUN_ERROR now
+    // trips this net exactly as the bespoke 'Agent execution failed' did.
     const fatal = consoleErrors.filter((e) =>
-      /Illegal invocation|Error sending message|Agent execution failed/i.test(e)
+      /Illegal invocation|Error sending message|Agent execution failed|\[HeadlessChat\] Run (error|failed)/i.test(e)
     );
     expect(fatal, `unexpected console errors:\n${fatal.join('\n')}`).toHaveLength(0);
   });

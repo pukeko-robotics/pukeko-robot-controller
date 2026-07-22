@@ -371,6 +371,113 @@ describe('RobotSession', () => {
     expect(out).toEqual({ error: 'Failed to capture frame. Is the camera active?' })
   })
 
+  // --- PLAT-13: the CopilotKit frontendTools registration shape ------------
+
+  it('frontendTools mirrors clientTools: same names, order and descriptions', () => {
+    const s = session()
+    const fts = s.frontendTools()
+    expect(fts.map((t) => t.name)).toEqual(s.clientTools.map((t) => t.name))
+    expect(fts.map((t) => t.description)).toEqual(s.clientTools.map((t) => t.description))
+  })
+
+  it('frontendTools delivers each declaration JSON Schema VERBATIM via the Standard JSON Schema protocol', () => {
+    const s = session()
+    const fts = s.frontendTools()
+    for (const [i, ft] of fts.entries()) {
+      const declared = s.clientTools[i].parameters
+      // CopilotKit's createToolSchema calls `~standard.jsonSchema.input(...)`
+      // when present — this is what keeps the AG-UI run-input declaration
+      // byte-identical to the bespoke path's (RC-1 client-authoritative text).
+      const std = (
+        ft.parameters as unknown as {
+          '~standard': { jsonSchema: { input: (o: unknown) => unknown }; validate: unknown }
+        }
+      )['~standard']
+      const emitted = std.jsonSchema.input({ target: 'draft-07' })
+      expect(emitted).toEqual(declared)
+      // ...and as a CLONE, so CopilotKit post-processing can't mutate presets.
+      expect(emitted).not.toBe(declared)
+      expect(typeof std.validate).toBe('function')
+    }
+  })
+
+  it('frontendTools pins the WIRE shape through createToolSchema post-processing (review M1)', () => {
+    // Replicates @copilotkit/core@1.61.0's (internal, unexported)
+    // createToolSchema: take the Standard-JSON-Schema emission, strip a
+    // top-level $schema, force-default type/properties, then recursively
+    // DELETE every `additionalProperties`. Asserting THROUGH this pins the
+    // actual run-input declaration, not just the input() emission — a future
+    // preset using $schema/additionalProperties would fail here instead of
+    // silently losing wire byte-identity.
+    function stripAdditionalProperties(schema: unknown): void {
+      if (!schema || typeof schema !== 'object') return
+      if (Array.isArray(schema)) return schema.forEach(stripAdditionalProperties)
+      const record = schema as Record<string, unknown>
+      if (record.additionalProperties !== undefined) delete record.additionalProperties
+      for (const value of Object.values(record)) stripAdditionalProperties(value)
+    }
+    function createToolSchemaReplica(parameters: unknown): Record<string, unknown> {
+      const std = (
+        parameters as { '~standard': { jsonSchema: { input: (o: unknown) => unknown } } }
+      )['~standard']
+      const rawSchema = std.jsonSchema.input({ target: 'draft-07' }) as Record<string, unknown>
+      const { $schema: _dropped, ...schema } = rawSchema
+      if (typeof schema.type !== 'string') schema.type = 'object'
+      if (typeof schema.properties !== 'object' || schema.properties === null)
+        schema.properties = {}
+      stripAdditionalProperties(schema)
+      return schema
+    }
+
+    const s = session()
+    const fts = s.frontendTools()
+    for (const [i, ft] of fts.entries()) {
+      const wire = createToolSchemaReplica(ft.parameters)
+      // The post-processed wire declaration must equal the bespoke-declared
+      // JSON Schema byte-for-byte (today's presets use none of the keys the
+      // post-processing touches, so it must be a no-op).
+      expect(wire, ft.name).toEqual(s.clientTools[i].parameters)
+    }
+  })
+
+  it('frontendTools handlers run the real fulfilment (motion recipe + capture envelope)', async () => {
+    const s = session()
+    const byName = Object.fromEntries(s.frontendTools().map((t) => [t.name, t]))
+    const motion = JSON.parse(
+      (await byName.move_forward.handler!({ steps: 2 }, {} as never)) as string
+    )
+    expect(motion).toEqual({
+      mimeType: 'image/png',
+      data: 'COMPOSITE',
+      motion: 'move_forward (steps=2)',
+    })
+    const capture = JSON.parse(
+      (await byName.capture_image.handler!({}, {} as never)) as string
+    )
+    // makeCaps' fake camera has already yielded BEFORE/AFTER to the motion
+    // recipe above; the third frame is null → the frozen error envelope.
+    expect(capture).toEqual({ error: 'Failed to capture frame. Is the camera active?' })
+  })
+
+  it('frontendTools applies wrapHandler around every real handler', async () => {
+    const s = session()
+    const wrappedNames: string[] = []
+    const fired: string[] = []
+    const fts = s.frontendTools({
+      wrapHandler: (name, handler) => {
+        wrappedNames.push(name)
+        return async (args) => {
+          fired.push(name)
+          return handler(args)
+        }
+      },
+    })
+    expect(wrappedNames).toEqual(fts.map((t) => t.name))
+    const capture = fts.find((t) => t.name === 'capture_image')!
+    await capture.handler!({}, {} as never)
+    expect(fired).toEqual(['capture_image'])
+  })
+
   it('loadAgentInfo sets agentLabel from the injected AG-UI /info response', async () => {
     const { fn } = makeFetch({
       responses: { '/info': { ok: true, status: 200, json: { provider: 'anthropic', model: 'claude' } } },
