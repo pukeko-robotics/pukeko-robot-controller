@@ -1,5 +1,5 @@
 import { createMiddleware } from 'langchain';
-import { ToolMessage, HumanMessage } from '@langchain/core/messages';
+import { HumanMessage, isToolMessage } from '@langchain/core/messages';
 import type { MessageContent } from '@langchain/core/messages';
 import { MOTION_TOOL_NAMES } from './robotToolNames.js';
 import type { LlmProvider } from "../lib/config.js";
@@ -87,7 +87,15 @@ export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptio
       for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
         if (
-          msg instanceof ToolMessage &&
+          // RC-21 (golden fix): the robot resolves two @langchain/core copies
+          // (its own + gaunt-sloth's, via the `file:` deps), so a capture
+          // ToolMessage constructed by the AG-UI pipeline's core copy is NOT an
+          // instance of the `ToolMessage` class WE import — `msg instanceof
+          // ToolMessage` silently returned false on the real server and no frame
+          // was ever injected (pruner's duck-typed `isToolMessage` saw it fine,
+          // hence tool-data:1 / human-images:0 in the dumps). Use the same
+          // cross-copy-safe guard the pruner uses.
+          isToolMessage(msg) &&
           typeof msg.content === 'string' &&
           (msg.name === 'capture_image' || (msg.name && MOTION_NAMES.has(msg.name)))
         ) {
