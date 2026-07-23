@@ -23,10 +23,46 @@ const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
 const injectedByThread = new Map<string, Set<string>>();
 
 export interface ImageInjectionOptions {
-  // ChatOllama only accepts {type:'image_url', image_url: <data-URL>} blocks;
-  // ChatAnthropic accepts the LangChain standard {type:'image', source_type, ...}
-  // block. Pick the right shape per provider.
+  // Providers disagree on the vision-block shape they can decode; see
+  // `imageBlockFor` for the per-provider mapping and the evidence behind it.
   provider: LlmProvider;
+}
+
+// A vision content block the target provider's @langchain converter actually
+// decodes. Verified against the installed converters (RC-21):
+//   - ollama    → {type:'image_url', image_url:<data-URL string>}. ChatOllama's
+//                 convertToOllamaMessages only handles `image_url` blocks
+//                 (utils.ts extractBase64FromDataUrl); the LangChain standard
+//                 `source_type` block THROWS "Unsupported content type: image".
+//   - openai /  → {type:'image_url', image_url:{url:<data-URL>}}. This is the
+//     openrouter  native OpenAI shape and is correct on BOTH the Completions API
+//                 (gpt-5.5 / gpt-5.6-luna → `image_url`) AND the Responses API
+//                 (gpt-*-pro / codex → `input_image`). A raw `source_type`
+//                 standard block serialises to an *invalid* `image_url` part on
+//                 the Responses path, so we emit the provider-native shape
+//                 rather than lean on @langchain/core's (deprecated, internal)
+//                 isDataContentBlock auto-conversion.
+//   - anthropic → LangChain standard {type:'image', source_type:'base64', ...}.
+//     / google    ChatAnthropic (native) and ChatGoogle (→ inlineData) both
+//                 decode the standard data content block directly.
+function imageBlockFor(provider: LlmProvider, mimeType: string, data: string) {
+  const dataUrl = `data:${mimeType};base64,${data}`;
+  switch (provider) {
+    case 'ollama':
+      return { type: 'image_url' as const, image_url: dataUrl };
+    case 'openai':
+    case 'openrouter':
+      return { type: 'image_url' as const, image_url: { url: dataUrl } };
+    case 'anthropic':
+    case 'google':
+    default:
+      return {
+        type: 'image' as const,
+        source_type: 'base64' as const,
+        mime_type: mimeType,
+        data,
+      };
+  }
 }
 
 export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptions) {
@@ -73,27 +109,27 @@ export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptio
 
       const newMessages = [...messages];
       for (const { payload, toolName, id } of injected) {
-        // Mark injected up-front so a retry / re-entry never double-injects,
-        // even on the error path below.
-        injectedIds.add(id);
         if (payload.error) {
+          // Mark injected so the error note isn't re-emitted on a later turn.
+          injectedIds.add(id);
           const label = MOTION_NAMES.has(toolName) ? `Motion (${toolName}) failed` : 'Camera unavailable';
           newMessages.push(new HumanMessage({ content: `${label}: ${payload.error}` }));
           continue;
         }
         if (payload.mimeType && payload.data) {
-          const block =
-            opts.provider === 'ollama'
-              ? {
-                  type: 'image_url' as const,
-                  image_url: `data:${payload.mimeType};base64,${payload.data}`,
-                }
-              : {
-                  type: 'image' as const,
-                  source_type: 'base64' as const,
-                  mime_type: payload.mimeType,
-                  data: payload.data,
-                };
+          // RC-21: mark the tool_call_id as injected ONLY when we actually emit a
+          // frame. The original code marked up-front, so a capture ToolMessage
+          // that arrived WITHOUT its base64 `data` (dropped upstream — e.g. a
+          // pruned/replayed history) both injected nothing AND poisoned the
+          // guard, permanently blocking that frame even if the data-bearing
+          // result showed up on a later turn. Marking on successful injection
+          // keeps the "never re-inject a retained frame" idempotency (a real
+          // frame always has data) while letting a later data-bearing sighting
+          // recover. (Within this process the context-pruner strips `data` only
+          // AFTER this middleware runs, so a data-less sighting means the bytes
+          // were absent before FI ever saw them — the RC-21 upstream case.)
+          injectedIds.add(id);
+          const block = imageBlockFor(opts.provider, payload.mimeType, payload.data);
 
           const isMotion = MOTION_NAMES.has(toolName);
           const headerText = isMotion
@@ -109,6 +145,9 @@ export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptio
             })
           );
         }
+        // else: a capture/motion tool result whose `data` is absent — inject
+        // nothing and leave the guard clean so a later data-bearing result for
+        // the same tool_call_id can still be injected.
       }
 
       return { messages: newMessages };
