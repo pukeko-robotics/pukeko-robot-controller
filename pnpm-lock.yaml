@@ -7,8 +7,6 @@ settings:
 overrides:
   uuid: '>=11.1.1'
   '@galvanized-pukeko/vue-ui': file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui
-  '@gaunt-sloth/agent': file:../gaunt-sloth/packages/agent
-  '@gaunt-sloth/core': file:../gaunt-sloth/packages/core
 
 importers:
 
@@ -21,11 +19,11 @@ importers:
         specifier: file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui
         version: file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui(@copilotkit/vue@1.61.0(typescript@5.9.3)(vue@3.5.39(typescript@5.9.3)))(vue@3.5.39(typescript@5.9.3))
       '@gaunt-sloth/agent':
-        specifier: file:../gaunt-sloth/packages/agent
-        version: file:../gaunt-sloth/packages/agent(@bufbuild/protobuf@2.12.1)(@cfworker/json-schema@4.1.1)(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-sdk@1.9.27(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(langsmith@0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
+        specifier: 2.0.0-alpha.24
+        version: 2.0.0-alpha.24(@bufbuild/protobuf@2.12.1)(@cfworker/json-schema@4.1.1)(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-sdk@1.9.27(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(langsmith@0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
       '@gaunt-sloth/core':
-        specifier: file:../gaunt-sloth/packages/core
-        version: file:../gaunt-sloth/packages/core(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
+        specifier: 2.0.0-alpha.24
+        version: 2.0.0-alpha.24(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
       '@langchain/anthropic':
         specifier: ^1.4.1
         version: 1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))
@@ -418,12 +416,12 @@ packages:
       '@copilotkit/vue':
         optional: true
 
-  '@gaunt-sloth/agent@file:../gaunt-sloth/packages/agent':
-    resolution: {directory: ../gaunt-sloth/packages/agent, type: directory}
+  '@gaunt-sloth/agent@2.0.0-alpha.24':
+    resolution: {integrity: sha512-y8aIsT114JgegLq+fIrjxfogoZlVgyJaZl0WX4zj8sk+NAAf1tq/09Oc/Tth0Z/K0mevWkkS0ZUWjGacahy7hw==}
     hasBin: true
 
-  '@gaunt-sloth/core@file:../gaunt-sloth/packages/core':
-    resolution: {directory: ../gaunt-sloth/packages/core, type: directory}
+  '@gaunt-sloth/core@2.0.0-alpha.24':
+    resolution: {integrity: sha512-QHByU/JYgTw2RuGxILP4oQt/2cx2UMd+RQfnZLvtanE0v4H6czbQTnxXGmKY3krNvRLtvtKDbhilOWIz9vCVNQ==}
     peerDependencies:
       '@langchain/anthropic': ^1.5.0
       '@langchain/deepseek': ^1.1.1
@@ -3305,12 +3303,12 @@ snapshots:
     optionalDependencies:
       '@copilotkit/vue': 1.61.0(typescript@5.9.3)(vue@3.5.39(typescript@5.9.3))
 
-  '@gaunt-sloth/agent@file:../gaunt-sloth/packages/agent(@bufbuild/protobuf@2.12.1)(@cfworker/json-schema@4.1.1)(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-sdk@1.9.27(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(langsmith@0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)':
+  '@gaunt-sloth/agent@2.0.0-alpha.24(@bufbuild/protobuf@2.12.1)(@cfworker/json-schema@4.1.1)(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-checkpoint@1.1.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/langgraph-sdk@1.9.27(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(langsmith@0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)':
     dependencies:
       '@a2a-js/sdk': 0.3.14(@bufbuild/protobuf@2.12.1)(express@5.2.1)
       '@ag-ui/core': 0.0.57
       '@ag-ui/encoder': 0.0.57
-      '@gaunt-sloth/core': file:../gaunt-sloth/packages/core(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
+      '@gaunt-sloth/core': 2.0.0-alpha.24(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)
       '@langchain/core': 1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
       '@langchain/langgraph': 1.4.8(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@4.4.3)
       '@langchain/mcp-adapters': 1.1.3(@cfworker/json-schema@4.1.1)(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(@langchain/langgraph@1.4.8(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@4.4.3))
@@ -3348,7 +3346,7 @@ snapshots:
       - vue
       - ws
 
-  '@gaunt-sloth/core@file:../gaunt-sloth/packages/core(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)':
+  '@gaunt-sloth/core@2.0.0-alpha.24(@langchain/anthropic@1.5.1(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/google@0.1.12(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/ollama@1.2.6(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)))(@langchain/openai@1.5.3(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0)':
     dependencies:
       '@langchain/core': 1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
       '@langchain/langgraph': 1.4.8(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@4.4.3)
@@ -3464,16 +3462,6 @@ snapshots:
     optionalDependencies:
       vue: 3.5.39(typescript@5.9.3)
 
-  '@langchain/langgraph-sdk@1.9.25(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))':
-    dependencies:
-      '@langchain/core': 1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
-      '@langchain/protocol': 0.0.18
-      '@types/json-schema': 7.0.15
-      p-queue: 9.3.1
-      p-retry: 7.1.1
-    optionalDependencies:
-      vue: 3.5.39(typescript@5.9.3)
-
   '@langchain/langgraph-sdk@1.9.27(@langchain/core@1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))':
     dependencies:
       '@langchain/core': 1.2.1(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
@@ -3508,11 +3496,11 @@ snapshots:
       - svelte
       - vue
 
-  '@langchain/langgraph@1.4.7(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@3.25.76)':
+  '@langchain/langgraph@1.4.8(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@3.25.76)':
     dependencies:
       '@langchain/core': 1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
       '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))
-      '@langchain/langgraph-sdk': 1.9.25(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))
+      '@langchain/langgraph-sdk': 1.9.27(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))
       '@langchain/protocol': 0.0.18
       '@standard-schema/spec': 1.1.0
       zod: 3.25.76
@@ -5144,7 +5132,7 @@ snapshots:
   langchain@1.5.3(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(vue@3.5.39(typescript@5.9.3))(ws@8.21.0):
     dependencies:
       '@langchain/core': 1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
-      '@langchain/langgraph': 1.4.7(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@3.25.76)
+      '@langchain/langgraph': 1.4.8(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))(vue@3.5.39(typescript@5.9.3))(zod@3.25.76)
       '@langchain/langgraph-checkpoint': 1.1.3(@langchain/core@1.2.3(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0))
       langsmith: 0.7.17(openai@6.45.0(ws@8.21.0)(zod@3.25.76))(ws@8.21.0)
       zod: 3.25.76

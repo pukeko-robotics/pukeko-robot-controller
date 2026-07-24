@@ -14,15 +14,9 @@ overrides:
   # once vue-ui republishes with applyTheme and bump the package.json pin —
   # same cleanup REL-9 did for the alpha.5→alpha.6 file: redirect.
   '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui'
-
-  # GS2-43 (temporary, same PLAT-22 pattern): published @gaunt-sloth/*@alpha.8
-  # still has the flat `projectGuidelines` key; the `prompts` object this repo
-  # now sets in server/index.ts exists only in the unreleased 2.0 config schema,
-  # so redirect to the sibling gaunt-sloth worktree/trunk to build against it.
-  # DROP these two once a @gaunt-sloth release with the `prompts` schema is
-  # published and bump the package.json pins.
-  '@gaunt-sloth/agent': 'file:../gaunt-sloth/packages/agent'
-  '@gaunt-sloth/core': 'file:../gaunt-sloth/packages/core'
+  # GS2-43 gaunt-sloth file: overrides dropped once @gaunt-sloth/*@2.0.0-alpha.24
+  # (the first release carrying the `prompts` config object) published — the
+  # package.json pins below now resolve the `prompts` schema straight from npm.
 
   # Dependencies pnpm is allowed to run install/build scripts for. esbuild needs
   # its postinstall to fetch its native binary; without this pnpm skips it
@@ -31,6 +25,6 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@gaunt-sloth/agent@2.0.0-alpha.8'
-  - '@gaunt-sloth/core@2.0.0-alpha.8'
   - '@galvanized-pukeko/vue-ui@0.1.1'
+  - '@gaunt-sloth/agent@2.0.0-alpha.24'
+  - '@gaunt-sloth/core@2.0.0-alpha.24'
