@@ -33,6 +33,24 @@ Real robot: skip `pnpm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT
 - **`src/agent/lazyToolRecoveryMiddleware.ts`** — counters small-local-model laziness: Gemma/Gemini often *narrate* a tool ("`read_distance` to check the range.") and end the turn without emitting the call, stalling the run. `wrapModelCall` inspects the reply; on a no-tool answer that names a known tool it runs a cheap **isolated** classifier call (`callbacks: []`, detached from streaming) asking whether a tool was intended, then re-invokes **through the framework `handler`** (not a hand-built message) so the recovered tool call streams as real `TOOL_CALL_*` events the client run loop can fulfil. `done_reason: 'length'` (Ollama output-cap truncation) is treated as a cutoff, not laziness, and left alone. Knobs: `maxRecoveries` (default 1, or 2 when `force`), `skipClassifier` (recover on any tool-name mention, no classifier round-trip), `force` (harshest — re-prompt on ANY no-tool reply, even one naming no tool; the model must call some tool every turn, leaning on `finish_task` as the always-available "done" tool; this is the Ollama-path equivalent of forcing tool_choice). **Still required for the Ollama/Gemma path:** tool choice is `auto` on every provider (see `tool_choice` below — forcing was removed because it made the hosted models mute and loopy), so the narrate-but-don't-call stall is possible on any path and this middleware is the net for all of them. (ChatOllama can't be forced anyway — `tool_choice?: never`.)
 - **`src/App.vue` + `src/components/WebcamPanel.vue`** — Vue UI. Camera capture happens in the hidden `<canvas>` in `WebcamPanel`. `App.vue` derives its `clientTools` (registered with `@galvanized-pukeko/vue-ui`'s `ChatInterface`) and `clientToolHandlers` from `getClientToolDefs()` (RC-1) instead of hand-duplicating tool metadata — each motion tool's HTTP path comes from the preset def's `clientEndpoint` (e.g. `move_forward` → `/forward`). The motion-tool handlers fetch the robot directly (`http://${VITE_ROBOT_HOST}${clientEndpoint}?steps=N`), capture Before/After frames, and compose them via `WebcamPanel.composeBeforeAfter`. **Requires CORS on the robot** — both `robot-stub/robotStub.ts` and `acebot-biped/for-agents/Biped_Robot_Web.py` send `Access-Control-Allow-Origin: *`.
 
+## Committing
+
+**Write the commit message to a file and commit with `git commit -F <file>` — never `git commit
+-m`.** This is a hard safety rule, not a style preference. Inside double quotes bash treats a
+backtick or `$(…)` as **shell command substitution**, so a message that quotes code the way ordinary
+prose does is *executed* before git ever runs; that failure has already destroyed a working tree on
+a developer machine. A file path carries no shell metacharacters, so with `-F` no part of the
+message can reach a shell — and multi-paragraph bodies, quotes and trailers survive with no
+escaping.
+
+- **Create the message file with your file-write tool** — never `echo "..." > msg.txt` and never an
+  unquoted heredoc. Both put the identical prose back into a shell argument one layer up, which is
+  where this hazard silently returns.
+- Messages are plain English: what changed and why. No code, no shell commands, no backticks, no
+  markup.
+- The same applies to any long prose on a command line — prefer `gh pr create --body-file` and
+  `gh release create --notes-file` over `--body` / `--notes`.
+
 ## Conventions worth knowing
 
 - Default model: Gemma 4 via Ollama (`OLLAMA_MODEL=gemma4:31b`). Optimized for small models — the motion-tools auto-capture + summarization combo means the LLM doesn't have to remember to bracket motions with `capture_image` and the context window stays trim.
