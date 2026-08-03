@@ -19,6 +19,7 @@ import {
   observeAssistantMessage,
   __motionLogForTest,
 } from './motionLog.js';
+import { toolFreeModel } from './toolFreeModel.js';
 
 // thread_id → in-flight summary Promise. afterModel kicks off the summary call
 // the moment the assistant decides to move; beforeModel on the next turn awaits
@@ -220,6 +221,10 @@ export interface MotionSummarizationOptions {
 
 export function createMotionSummarizationMiddleware(opts: MotionSummarizationOptions) {
   const summaryPrompt = opts.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
+  // This call sends a transcript and no `tools`; the agent model's baked-in
+  // tool_choice / parallel_tool_calls are rejected on a tool-less request.
+  // Built once, not per call: rebuilding a provider model allocates a client.
+  const summaryLlm = toolFreeModel(opts.llm);
   return createMiddleware({
     name: 'motion-summarization',
 
@@ -249,7 +254,7 @@ export function createMotionSummarizationMiddleware(opts: MotionSummarizationOpt
           // Detach from the main agent's run config — otherwise tokens
           // streamed by this parallel call hit the now-closed StreamMessages
           // controller for the original turn and spam ERR_INVALID_STATE.
-          const result = await opts.llm.invoke(summarizationInput, {
+          const result = await summaryLlm.invoke(summarizationInput, {
             callbacks: [],
             tags: ['motion-summarization'],
           });

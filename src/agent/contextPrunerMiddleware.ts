@@ -18,6 +18,7 @@ import {
   isMotionToolCall,
   observeAssistantMessage,
 } from './motionLog.js';
+import { toolFreeModel } from './toolFreeModel.js';
 
 const IMAGE_TOOL_NAMES: ReadonlySet<string> = new Set([...MOTION_TOOL_NAMES, 'capture_image']);
 
@@ -279,6 +280,9 @@ function dropAllImageBlocks(msg: BaseMessage): BaseMessage {
   return msg;
 }
 
+// `llm` MUST be the tool-free model (see toolFreeModel): this call sends a
+// transcript and no `tools`, and the agent model's baked-in tool_choice /
+// parallel_tool_calls are rejected outright by OpenAI on a tool-less request.
 async function runSummary(
   llm: BaseChatModel,
   summaryPrompt: string,
@@ -307,6 +311,8 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
   const keepLatestImages = Math.max(0, opts.keepLatestImages ?? 1);
   const imageTokenBudget = opts.imageTokenBudget ?? 800;
   const summarizeThreshold = Math.floor(summarizeAtFraction * maxContextTokens);
+  // Built once, not per call: rebuilding a provider model allocates a client.
+  const summaryLlm = toolFreeModel(opts.llm);
 
   return createMiddleware({
     name: 'context-pruner',
@@ -359,7 +365,7 @@ export function createContextPrunerMiddleware(opts: ContextPrunerOptions) {
           // Deduplicate concurrent in-flight summaries per thread.
           let promise = inflightSummaries.get(threadId);
           if (!promise) {
-            promise = runSummary(opts.llm, summaryPrompt, [firstHuman, ...headSlice]);
+            promise = runSummary(summaryLlm, summaryPrompt, [firstHuman, ...headSlice]);
             inflightSummaries.set(threadId, promise);
           }
           let summaryText = '';
