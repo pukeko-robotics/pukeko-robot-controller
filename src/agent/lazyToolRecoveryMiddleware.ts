@@ -6,6 +6,8 @@ import {
   isAIMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { toolFreeModel } from './toolFreeModel.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Lazy-tool-recovery middleware
@@ -110,9 +112,24 @@ async function classifyIntendedTool(
   text: string,
   toolNames: string[]
 ): Promise<Verdict> {
+  // The classifier sends a transcript and NO tools, so it must not carry the
+  // agent model's baked-in tool-only request params (see toolFreeModel): this
+  // is the same defect RC-24 fixed in the two summarization sub-calls. `model`
+  // here is `req.model`, the agent model *before* the framework binds tools —
+  // the tool list travels separately as `req.tools` — so its constructor-level
+  // tool_choice / parallel_tool_calls ride on this request, which OpenAI
+  // rejects outright. The catch below would swallow that 400 and the recovery
+  // net would silently never engage.
+  //
+  // Rebuilt here rather than at middleware construction because the model only
+  // arrives with the request. That is affordable: this path runs at most
+  // `maxRecoveries` times per model call, only on a no-tool reply that names a
+  // tool, and the rebuild is dwarfed by the round-trip it precedes. Providers
+  // with nothing to strip (Ollama, Google) get the same instance back.
+  const toolFree = toolFreeModel(model as unknown as BaseChatModel) as unknown as ModelLike;
   let out = '';
   try {
-    const res = await model.invoke(
+    const res = await toolFree.invoke(
       [
         new SystemMessage(CLASSIFIER_SYSTEM(toolNames)),
         new HumanMessage(`Assistant message:\n"""\n${text}\n"""`),
