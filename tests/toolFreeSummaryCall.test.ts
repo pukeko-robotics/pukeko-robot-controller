@@ -20,24 +20,38 @@ import {
   AIMessage,
   HumanMessage,
   ToolMessage,
-  RemoveMessage,
   isAIMessage,
   isToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages'
+import { ChatOpenAI } from '@langchain/openai'
+import { ChatAnthropic } from '@langchain/anthropic'
+import { ChatOpenRouter } from '@langchain/openrouter'
+import { ChatOllama } from '@langchain/ollama'
+import { ChatGoogle } from '@langchain/google/node'
 import { createContextPrunerMiddleware } from '../src/agent/contextPrunerMiddleware.js'
 import {
   createMotionSummarizationMiddleware,
   __pendingSummariesForTest,
 } from '../src/agent/motionSummarizationMiddleware.js'
+import { createLazyToolRecoveryMiddleware } from '../src/agent/lazyToolRecoveryMiddleware.js'
 import { toolFreeModel } from '../src/agent/toolFreeModel.js'
 import { __resetMotionLogForTest } from '../src/agent/motionLog.js'
+import { ScriptedRobotChatModel } from '../server/test-support/scriptedRobotModel.js'
 
 type AnyLlm = Parameters<typeof createContextPrunerMiddleware>[0]['llm']
 
 interface HookContainer {
   beforeModel?: unknown
   afterModel?: unknown
+  wrapModelCall?: unknown
+}
+
+// Duck-typed, not `instanceof RemoveMessage`: two copies of @langchain/core are
+// installed in this repo, so an `instanceof` across the boundary can silently
+// become a no-op filter.
+function isRemoveMessage(m: BaseMessage): boolean {
+  return (m as { getType?: () => string }).getType?.() === 'remove'
 }
 
 function getHook(hook: unknown): (state: unknown, runtime: unknown) => unknown {
@@ -81,11 +95,17 @@ class FakeToolBoundModel {
   lc_kwargs: Record<string, unknown>
   modelKwargs: Record<string, unknown>
   invocationKwargs: Record<string, unknown>
+  // What a successful sub-call returns. A constructor field rather than a
+  // static, so it rides through `lc_kwargs` on a rebuild exactly like every
+  // other field; the summarizer sub-calls want summary prose, the lazy-tool
+  // classifier wants a YES/NO verdict.
+  reply: string
 
   constructor(fields: Record<string, unknown>) {
     this.lc_kwargs = fields
     this.modelKwargs = (fields.modelKwargs as Record<string, unknown>) ?? {}
     this.invocationKwargs = (fields.invocationKwargs as Record<string, unknown>) ?? {}
+    this.reply = (fields.reply as string) ?? 'Robot is south of the cone, facing west.'
   }
 
   // The request body a real OpenAI-shaped provider would send: the tool-less
@@ -108,7 +128,7 @@ class FakeToolBoundModel {
     if (rejection) {
       throw new Error(`400 Invalid value: ${rejection}.`)
     }
-    return { content: 'Robot is south of the cone, facing west.' }
+    return { content: this.reply }
   }
 }
 
@@ -187,6 +207,25 @@ describe('toolFreeModel', () => {
     expect(free.lc_kwargs.model).toBe('gpt-5.5')
   })
 
+  it('strips a baked-in tools array too — defensive breadth, no production path writes one', () => {
+    // `tools` is in TOOL_ONLY_REQUEST_KEYS for breadth, not because anything in
+    // this repo puts it there: server/createLlm.ts bakes in only tool_choice
+    // and parallel_tool_calls. The entry is covered here so it stays a real,
+    // falsifiable part of the helper's contract instead of decoration — but
+    // this test speaks for the helper, NOT for any shipped call site.
+    const agent = new FakeToolBoundModel({
+      model: 'gpt-5.5',
+      modelKwargs: { tools: [{ type: 'function', function: { name: 'move_forward' } }], seed: 7 },
+      invocationKwargs: { tools: [{ name: 'move_forward' }] },
+    })
+    const free = toolFreeModel(agent as unknown as AnyLlm) as unknown as FakeToolBoundModel
+    expect(free).not.toBe(agent as unknown as AnyLlm)
+    expect(free.modelKwargs).toEqual({ seed: 7 })
+    expect(free.invocationKwargs).toEqual({})
+    // The original bag is untouched.
+    expect(agent.modelKwargs.tools).toBeDefined()
+  })
+
   it('strips the Anthropic spelling too (invocationKwargs.tool_choice)', () => {
     const agent = new FakeToolBoundModel({
       model: 'claude-x',
@@ -222,6 +261,155 @@ describe('toolFreeModel', () => {
   })
 })
 
+// ── The rebuild, against the REAL provider classes ──────────────────────────
+// Everything above uses `FakeToolBoundModel`, which does `this.lc_kwargs =
+// fields` and therefore round-trips BY CONSTRUCTION — it cannot fail the way a
+// real class can. These cases run the rebuild through the actual `@langchain/*`
+// constructors `server/createLlm.ts` uses, with the exact fields it passes.
+//
+// The failure mode being guarded is NOT the try/catch one: it is a future
+// `@langchain/*` bump whose constructor SUCCEEDS while silently dropping or
+// renaming a field. Nothing throws, no warning prints, and the summary model
+// comes back quietly missing its endpoint or its key. So these assert field
+// SURVIVAL, not just the absence of the tool params.
+//
+// Hermetic and key-free: dummy API keys, and the only method read is
+// `invocationParams({})` — the pure function that assembles the request body.
+// NOTHING HERE MAY CALL `.invoke()` OR `.stream()`. That is the one route to a
+// network call, and on a machine with LangSmith tracing configured it would
+// also spend a key. Construction alone opens no socket.
+
+// `invocationParams` is public on all of these but its option type is
+// per-provider, so the call goes through one narrow structural cast.
+function requestParamsOf(model: unknown): Record<string, unknown> {
+  return (
+    model as { invocationParams: (o: Record<string, never>) => Record<string, unknown> }
+  ).invocationParams({})
+}
+
+describe('toolFreeModel against the real provider classes (offline, no key spend)', () => {
+  it('ChatOpenAI: both params go, and model / apiKey / temperature / baseURL survive the rebuild', () => {
+    const agent = new ChatOpenAI({
+      model: 'gpt-4.1-mini',
+      apiKey: 'sk-not-a-real-key',
+      temperature: 0.3,
+      modelKwargs: { parallel_tool_calls: false, tool_choice: 'auto' },
+      configuration: { baseURL: 'https://example.invalid/v1' },
+    })
+    // Before: the request the summarizer would have sent is rejectable.
+    expect(openAiRejection(requestParamsOf(agent))).toBe(
+      "'tool_choice' is only allowed when 'tools' are specified"
+    )
+
+    const free = toolFreeModel(agent)
+    expect(free).not.toBe(agent)
+    expect(free).toBeInstanceOf(ChatOpenAI)
+
+    const params = requestParamsOf(free)
+    expect(openAiRejection(params)).toBeNull()
+    // Value, not key presence: ChatOpenAI's param object carries plenty of keys
+    // set to `undefined`, and JSON.stringify drops those before they reach the
+    // wire. A defined value is what OpenAI rejects, so that is what we assert.
+    expect(params.tool_choice).toBeUndefined()
+    expect(params.parallel_tool_calls).toBeUndefined()
+
+    // Field survival. `clientConfig.baseURL` is the effective endpoint — the
+    // one that reaches the wire — so it is what a silent drop would break.
+    expect(params.model).toBe('gpt-4.1-mini')
+    expect(free.model).toBe('gpt-4.1-mini')
+    expect(free.temperature).toBe(0.3)
+    // Compared as a boolean, not by value. The dummy key must be the one that
+    // survived — truthiness would not do, because a rebuild that DROPPED the
+    // field falls back to process.env.OPENAI_API_KEY and would look fine. But a
+    // value comparison would print that ambient key into the failure output on
+    // any machine that has one, so the assertion is reduced to a boolean first.
+    expect(free.apiKey === 'sk-not-a-real-key').toBe(true)
+    expect(free.clientConfig.baseURL).toBe('https://example.invalid/v1')
+
+    // The shared agent model is never mutated — other threads still get theirs.
+    expect(requestParamsOf(agent).tool_choice).toBe('auto')
+  })
+
+  it('ChatAnthropic: the invocationKwargs spelling goes, and model / apiKey / max_tokens survive', () => {
+    const agent = new ChatAnthropic({
+      model: 'claude-sonnet-4-5',
+      apiKey: 'sk-ant-not-a-real-key',
+      invocationKwargs: { tool_choice: { type: 'auto', disable_parallel_tool_use: true } },
+    })
+    expect(requestParamsOf(agent).tool_choice).toBeDefined()
+
+    const free = toolFreeModel(agent)
+    expect(free).not.toBe(agent)
+    expect(free).toBeInstanceOf(ChatAnthropic)
+
+    const params = requestParamsOf(free)
+    expect(params.tool_choice).toBeUndefined()
+    expect(params.model).toBe('claude-sonnet-4-5')
+    expect(params.max_tokens).toBe(requestParamsOf(agent).max_tokens)
+    // Boolean, not by value — see the ChatOpenAI case above.
+    expect(free.apiKey === 'sk-ant-not-a-real-key').toBe(true)
+
+    expect(requestParamsOf(agent).tool_choice).toBeDefined()
+  })
+
+  it('ChatOpenRouter: both params go, and model / apiKey / the default baseURL survive', () => {
+    const agent = new ChatOpenRouter({
+      model: 'z-ai/glm-4.6',
+      apiKey: 'or-not-a-real-key',
+      modelKwargs: { parallel_tool_calls: false, tool_choice: 'auto' },
+    })
+    expect(openAiRejection(requestParamsOf(agent))).toBe(
+      "'tool_choice' is only allowed when 'tools' are specified"
+    )
+
+    const free = toolFreeModel(agent)
+    expect(free).not.toBe(agent)
+    expect(free).toBeInstanceOf(ChatOpenRouter)
+    expect(openAiRejection(requestParamsOf(free))).toBeNull()
+    expect(requestParamsOf(free).model).toBe('z-ai/glm-4.6')
+    // Boolean, not by value — see the ChatOpenAI case above.
+    expect(free.apiKey === 'or-not-a-real-key').toBe(true)
+    // The default endpoint is applied by the constructor, not passed in — a
+    // rebuild that lost it would still look fine on `model` alone.
+    expect(free.baseURL).toBe('https://openrouter.ai/api/v1')
+  })
+
+  it('ChatOpenRouter: a custom baseURL survives the rebuild', () => {
+    const agent = new ChatOpenRouter({
+      model: 'z-ai/glm-4.6',
+      apiKey: 'or-not-a-real-key',
+      modelKwargs: { parallel_tool_calls: false, tool_choice: 'auto' },
+      baseURL: 'https://example.invalid/openrouter/v1',
+    })
+    const free = toolFreeModel(agent)
+    expect(free).not.toBe(agent)
+    expect(free.baseURL).toBe('https://example.invalid/openrouter/v1')
+    expect(openAiRejection(requestParamsOf(free))).toBeNull()
+  })
+
+  it('ChatOllama and ChatGoogle bake in nothing to strip, so they come back as the SAME instance', () => {
+    // Not a constructor-name comparison: `ChatGoogle` from the node entrypoint
+    // rebuilds as `ChatGoogleNode`, so identity is the only honest assertion.
+    const ollama = new ChatOllama({ baseUrl: 'http://localhost:11434', model: 'gemma4:12b' })
+    expect(toolFreeModel(ollama)).toBe(ollama)
+
+    const google = new ChatGoogle({
+      model: 'gemini-2.5-flash',
+      apiKey: 'g-not-a-real-key',
+      platformType: 'gai',
+    })
+    expect(toolFreeModel(google)).toBe(google)
+  })
+
+  it('ScriptedRobotChatModel comes back as the SAME instance — the e2e seam is untouched', () => {
+    // The PUKEKO_FAKE_LLM path (server/createLlm.ts). This is the property the
+    // `pnpm run e2e` gate would have covered; that script spawns npx, which is
+    // barred on this machine, so the property is pinned here instead.
+    const scripted = new ScriptedRobotChatModel()
+    expect(toolFreeModel(scripted)).toBe(scripted)
+  })
+})
+
 // ── The sub-calls the middlewares actually make ─────────────────────────────
 describe('context-pruner summarization sub-call', () => {
   it('sends no tool_choice and no parallel_tool_calls (the request would 400 otherwise)', async () => {
@@ -237,13 +425,6 @@ describe('context-pruner summarization sub-call', () => {
     expect(params).not.toHaveProperty('parallel_tool_calls')
   })
 
-  it('the sub-call carries no tools, which is why the params must go', async () => {
-    const mw = createContextPrunerMiddleware({ llm: agentModel(), ...FORCE_SUMMARIZE }) as HookContainer
-    await getHook(mw.beforeModel)({ messages: historyReadyToSummarize() }, runtime)
-    const params = lastCallRequestParams()
-    expect(params.tools).toBeUndefined()
-  })
-
   it('the summary is actually applied — pruning happens on an OpenAI-shaped model', async () => {
     // The consequence of the defect: the sub-call threw, the catch swallowed it,
     // summaryText stayed '', and no summary was ever folded in. Assert the
@@ -252,7 +433,7 @@ describe('context-pruner summarization sub-call', () => {
     const result = (await getHook(mw.beforeModel)({ messages: historyReadyToSummarize() }, runtime)) as {
       messages: BaseMessage[]
     }
-    const rebuilt = result.messages.filter((m) => !(m instanceof RemoveMessage))
+    const rebuilt = result.messages.filter((m) => !isRemoveMessage(m))
     const summaries = rebuilt.filter((m) => String(m.content).startsWith('[Context summary]'))
     expect(summaries).toHaveLength(1)
     expect(rebuilt.length).toBeLessThan(historyReadyToSummarize().length)
@@ -280,6 +461,50 @@ describe('motion-summarization summarization sub-call', () => {
   })
 })
 
+// The third tool-less sub-call on the agent model. `req.model` is the model
+// BEFORE the framework binds tools (the tool list arrives separately as
+// `req.tools`), so the classifier request carries the same baked-in params and
+// the same swallowed 400 — after which the recovery net silently never engages.
+describe('lazy-tool-recovery classifier sub-call', () => {
+  it('sends no tool_choice and no parallel_tool_calls, so the classifier is not silently rejected', async () => {
+    const model = new FakeToolBoundModel({
+      model: 'gpt-5.5',
+      modelKwargs: { parallel_tool_calls: false, tool_choice: 'auto' },
+      reply: 'YES\nread_distance',
+    })
+    const mw = createLazyToolRecoveryMiddleware() as HookContainer
+    const wrap = getHook(mw.wrapModelCall)
+
+    const handler = vi
+      .fn()
+      .mockResolvedValueOnce(new AIMessage('`read_distance` to check the range before moving.'))
+      .mockResolvedValueOnce(
+        new AIMessage({
+          content: '',
+          tool_calls: [{ name: 'read_distance', args: {}, id: 'tc-recovered' }],
+        })
+      )
+    const request = {
+      model,
+      messages: [new HumanMessage('Drive to the cone.')],
+      tools: [{ name: 'read_distance' }, { name: 'move_forward' }],
+    }
+
+    const out = (await wrap(request, handler)) as AIMessage
+
+    // The classifier request itself: the throwing fake reproduces the measured
+    // 400, so reaching a verdict at all proves the params were gone.
+    expect(FakeToolBoundModel.calls).toHaveLength(1)
+    expect(openAiRejection(lastCallRequestParams())).toBeNull()
+
+    // And the observable consequence — before the fix the 400 was swallowed by
+    // the classifier's catch, the verdict defaulted to not-lazy, and the net
+    // never re-prompted.
+    expect(handler).toHaveBeenCalledTimes(2)
+    expect(out.tool_calls?.[0].name).toBe('read_distance')
+  })
+})
+
 // ── Regression guard: call→result pairing across the summary boundary ───────
 // This is characterization, not a bug fix: the pruner's slicing was measured
 // (1296 beforeModel invocations over 432 distinct histories x 3 cycles x both
@@ -302,7 +527,7 @@ function pairIssues(messages: BaseMessage[]): PairIssue[] {
   const called = new Set<string>()
   const answered = new Set<string>()
   for (const m of messages) {
-    if (m instanceof RemoveMessage) continue
+    if (isRemoveMessage(m)) continue
     if (isAIMessage(m)) {
       for (const tc of (m as AIMessage).tool_calls ?? []) if (tc.id) called.add(tc.id)
     } else if (isToolMessage(m)) {
@@ -345,13 +570,13 @@ describe('context-pruner: no orphaned tool results across the summary boundary',
 
     // Cycle 1.
     const r1 = (await before({ messages: historyReadyToSummarize() }, runtime)) as { messages: BaseMessage[] }
-    const rebuilt1 = r1.messages.filter((m) => !(m instanceof RemoveMessage))
+    const rebuilt1 = r1.messages.filter((m) => !isRemoveMessage(m))
     expect(pairIssues(rebuilt1)).toEqual([])
 
     // Cycle 2: the model does one more motion turn off the rebuilt state, and
     // the prior summary now sits inside the next head slice.
     const r2 = (await before({ messages: [...rebuilt1, ...motionTurn(2)] }, runtime)) as { messages: BaseMessage[] }
-    const rebuilt2 = r2.messages.filter((m) => !(m instanceof RemoveMessage))
+    const rebuilt2 = r2.messages.filter((m) => !isRemoveMessage(m))
     expect(pairIssues(rebuilt2)).toEqual([])
 
     // And the summarize path really did run on both cycles — otherwise this
@@ -361,6 +586,6 @@ describe('context-pruner: no orphaned tool results across the summary boundary',
 
     // Cycle 3, to catch an orphan that needs two boundaries to surface.
     const r3 = (await before({ messages: [...rebuilt2, ...motionTurn(3)] }, runtime)) as { messages: BaseMessage[] }
-    expect(pairIssues(r3.messages.filter((m) => !(m instanceof RemoveMessage)))).toEqual([])
+    expect(pairIssues(r3.messages.filter((m) => !isRemoveMessage(m)))).toEqual([])
   })
 })

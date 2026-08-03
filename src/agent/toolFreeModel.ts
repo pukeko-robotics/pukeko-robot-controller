@@ -25,6 +25,13 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 
 // Request params that are only valid alongside a `tools` array.
+//
+// `tool_choice` and `parallel_tool_calls` are the two `server/createLlm.ts`
+// actually bakes in, and the two measured to 400. `tools` is **defensive
+// breadth**: no production path in this repo writes it into either kwargs bag
+// today, so removing the entry changes nothing that ships — it is here because
+// a bag that did carry one would be equally wrong on a call that sends none.
+// It has its own unit test so the entry cannot quietly rot into decoration.
 const TOOL_ONLY_REQUEST_KEYS: ReadonlySet<string> = new Set([
   'tool_choice',
   'tools',
