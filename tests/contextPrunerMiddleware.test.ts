@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   AIMessage,
+  AIMessageChunk,
   HumanMessage,
   SystemMessage,
   ToolMessage,
   RemoveMessage,
   type BaseMessage,
 } from '@langchain/core/messages'
+import { MemorySaver, messagesStateReducer } from '@langchain/langgraph'
 import {
   createContextPrunerMiddleware,
   estimateTokens,
@@ -163,11 +165,16 @@ describe('contextPrunerMiddleware — mechanical prune', () => {
     const userMsg = new HumanMessage('go')
     const aiOld = new AIMessage({
       content: 'first thought',
-      additional_kwargs: { reasoning_content: 'OLD reasoning', other_key: 'kept' },
+      additional_kwargs: {
+        reasoning_content: 'OLD reasoning',
+        other_key: 'kept',
+        refusal: null,
+        parsed: { shape: 'kept too' },
+      },
     })
     const aiMid = new AIMessage({
       content: 'second thought',
-      additional_kwargs: { reasoning_content: 'MID reasoning' },
+      additional_kwargs: { reasoning_content: 'MID reasoning', audio: { id: 'au-1' } },
     })
     const aiLast = new AIMessage({
       content: 'latest thought',
@@ -183,8 +190,17 @@ describe('contextPrunerMiddleware — mechanical prune', () => {
     const out1 = updated[3] as AIMessage
     const out2 = updated[4] as AIMessage
     expect(out0.additional_kwargs?.reasoning_content).toBeUndefined()
+    // reasoning_content is the ONLY additional_kwargs key that goes.
     expect(out0.additional_kwargs?.other_key).toBe('kept')
+    expect(out0.additional_kwargs?.refusal).toBeNull()
+    expect(out0.additional_kwargs?.parsed).toEqual({ shape: 'kept too' })
+    expect(Object.keys(out0.additional_kwargs ?? {}).sort()).toEqual([
+      'other_key',
+      'parsed',
+      'refusal',
+    ])
     expect(out1.additional_kwargs?.reasoning_content).toBeUndefined()
+    expect(out1.additional_kwargs?.audio).toEqual({ id: 'au-1' })
     expect(out2.additional_kwargs?.reasoning_content).toBe('LATEST reasoning')
   })
 
@@ -627,5 +643,259 @@ describe('contextPrunerMiddleware — RC-17 mid-history SystemMessage fix', () =
           )
     expect(systemIndices(rebuilt)).toEqual([])
     expect(summaryMessages(rebuilt)).toHaveLength(0)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// RC-28 — stripReasoningContent copies the message instead of re-describing it
+//
+// The defect these pin: the strip used to rebuild each AIMessage from an object
+// literal naming five fields, so every field not on that list was silently
+// dropped. The first test is the CLASS guard — it asserts on a field the
+// production code does not name anywhere, so it stays red under any
+// field-enumerating rebuild, however long the enumeration.
+// ───────────────────────────────────────────────────────────────────────────
+describe('contextPrunerMiddleware — RC-28 reasoning strip preserves the whole message', () => {
+  // Read/write a property the production code has never heard of. Cast because
+  // no message type declares it — that is exactly the point.
+  function stampUnknownField(msg: BaseMessage, value: unknown): void {
+    ;(msg as unknown as Record<string, unknown>).field_no_one_enumerated = value
+  }
+  function readUnknownField(msg: BaseMessage): unknown {
+    return (msg as unknown as Record<string, unknown>).field_no_one_enumerated
+  }
+
+  it('CLASS GUARD: a field the strip does not name survives the round trip', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const aiOld = new AIMessage({
+      id: 'ai-old',
+      content: 'thinking',
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+    })
+    stampUnknownField(aiOld, { anything: 'at all' })
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before({ messages: [new HumanMessage('go'), aiOld, aiLast] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as AIMessage
+
+    // The strip fired…
+    expect(out.additional_kwargs?.reasoning_content).toBeUndefined()
+    // …and it carried across a field nothing in the implementation mentions.
+    expect(readUnknownField(out)).toEqual({ anything: 'at all' })
+    // The caller still holds the input array; the source must be untouched.
+    expect(aiOld.additional_kwargs?.reasoning_content).toBe('OLD reasoning')
+    expect(out).not.toBe(aiOld)
+  })
+
+  it('preserves response_metadata — the OpenAI Responses API carries the reasoning-item ids a following tool call must be paired with there', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const aiOld = new AIMessage({
+      id: 'ai-old',
+      content: '',
+      tool_calls: [{ name: 'turn_right', args: { steps: 1 }, id: 'tc-1' }],
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+      response_metadata: {
+        model_name: 'gpt-5.2',
+        output: [{ type: 'reasoning', id: 'rs_abc123' }],
+      },
+    })
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before({ messages: [new HumanMessage('go'), aiOld, aiLast] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as AIMessage
+
+    expect(out.additional_kwargs?.reasoning_content).toBeUndefined()
+    expect(out.response_metadata).toEqual({
+      model_name: 'gpt-5.2',
+      output: [{ type: 'reasoning', id: 'rs_abc123' }],
+    })
+    // The tool call the reasoning item is paired with is still there too.
+    expect(out.tool_calls?.map((tc) => tc.id)).toEqual(['tc-1'])
+  })
+
+  it('preserves invalid_tool_calls, tool_call_chunks and the message class on an AIMessageChunk', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // invalid_tool_calls rides on a settled AIMessage. (It cannot be set
+    // alongside tool_call_chunks: the chunk constructor derives it from them.)
+    const aiInvalid = new AIMessage({
+      id: 'ai-invalid',
+      content: '',
+      invalid_tool_calls: [
+        { name: 'walk_forward', args: '{"steps":', id: 'tc-2', error: 'unterminated JSON' },
+      ],
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+    })
+    // A streamed turn arrives as an AIMessageChunk. isAIMessage() admits it, so
+    // it reaches the strip; only AIMessageChunk carries tool_call_chunks.
+    const chunk = new AIMessageChunk({
+      id: 'ai-chunk',
+      content: 'partial',
+      tool_call_chunks: [
+        { name: 'turn_left', args: '{"steps":1}', id: 'tc-1', index: 0, type: 'tool_call_chunk' },
+      ],
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+    })
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before(
+      { messages: [new HumanMessage('go'), aiInvalid, chunk, aiLast] },
+      runtime
+    )
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const outInvalid = updated[2] as AIMessage
+    const outChunk = updated[3] as AIMessageChunk
+
+    expect(outInvalid.additional_kwargs?.reasoning_content).toBeUndefined()
+    expect(outInvalid.invalid_tool_calls).toEqual([
+      { name: 'walk_forward', args: '{"steps":', id: 'tc-2', error: 'unterminated JSON' },
+    ])
+
+    expect(outChunk.additional_kwargs?.reasoning_content).toBeUndefined()
+    expect(outChunk.tool_call_chunks).toEqual([
+      { name: 'turn_left', args: '{"steps":1}', id: 'tc-1', index: 0, type: 'tool_call_chunk' },
+    ])
+    // Same class as it arrived as — a rebuild would flatten a chunk into a plain
+    // AIMessage. Compared by prototype, never instanceof: this repo resolves two
+    // copies of @langchain/core, so instanceof against an imported message class
+    // is unreliable here.
+    expect(Object.getPrototypeOf(outChunk)).toBe(Object.getPrototypeOf(chunk))
+  })
+
+  it('returns the same object reference when there is no reasoning_content, so reasoningStripped counts only changed messages', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const llm = makeStubLlm()
+      const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      const aiClean = new AIMessage({ id: 'ai-clean', content: 'no reasoning here' })
+      const aiDirty = new AIMessage({
+        id: 'ai-dirty',
+        content: 'has reasoning',
+        additional_kwargs: { reasoning_content: 'OLD reasoning' },
+      })
+      const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+      const result = await before(
+        { messages: [new HumanMessage('go'), aiClean, aiDirty, aiLast] },
+        runtime
+      )
+      const updated = (result as { messages: BaseMessage[] }).messages
+
+      // Untouched message comes back as the very same object…
+      expect(updated[2]).toBe(aiClean)
+      // …and the changed one does not.
+      expect(updated[3]).not.toBe(aiDirty)
+
+      // The per-call summary line reports exactly one strip. The stat is derived
+      // from reference identity, so if the strip ever returned a fresh object
+      // for an unchanged message this would read 2.
+      const line = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((s) => s.includes('→ LLM'))
+      expect(line).toBeDefined()
+      expect(line).toContain('reasoning:1')
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it('the preserved fields survive the add_messages reducer the rewritten array is fed through', async () => {
+    // beforeModel returns RemoveMessage(REMOVE_ALL) + the rebuilt array, and the
+    // graph folds that into state through messagesStateReducer. Anything the
+    // reducer drops never reaches the model, so the preservation is only real if
+    // it holds on the far side of it.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const aiOld = new AIMessage({
+      id: 'ai-old',
+      content: 'thinking',
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+      response_metadata: { output: [{ type: 'reasoning', id: 'rs_abc123' }] },
+    })
+    stampUnknownField(aiOld, 'survives')
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before({ messages: [new HumanMessage('go'), aiOld, aiLast] }, runtime)
+    const emitted = (result as { messages: BaseMessage[] }).messages
+    const reduced = messagesStateReducer([new HumanMessage({ id: 'prior', content: 'old' })], emitted)
+
+    const out = reduced.find((m) => m.id === 'ai-old') as AIMessage
+    expect(out).toBeDefined()
+    expect(out.additional_kwargs?.reasoning_content).toBeUndefined()
+    expect(out.response_metadata).toEqual({ output: [{ type: 'reasoning', id: 'rs_abc123' }] })
+    expect(readUnknownField(out)).toBe('survives')
+  })
+
+  it('the strip holds through the checkpoint serde — the stripped reasoning is absent from the serialized bytes and the un-named field is present', async () => {
+    // Every assertion above reads a property off the returned object. The bytes
+    // langgraph checkpoints are produced by a different route: the message's
+    // toJSON takes its KEY SET from lc_kwargs and its VALUES from the live
+    // instance fields. The strip copies the source's own property descriptors,
+    // so the clone shares lc_kwargs with the source BY REFERENCE and that shared
+    // object still carries the reasoning. Today the instance field wins and the
+    // payload is clean — but that is a property of one library version, not of
+    // this module, and nothing else in this suite would notice it changing.
+    // Assert on the bytes, so a core that resolved lc_kwargs first (or anyone
+    // patching lc_kwargs) is caught here rather than in a checkpoint in
+    // production, where the reasoning would be persisted while every
+    // property-reading test above still passed.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const aiOld = new AIMessage({
+      id: 'ai-old',
+      content: 'thinking',
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+      response_metadata: { output: [{ type: 'reasoning', id: 'rs_abc123' }] },
+    })
+    // A streamed turn reaches the strip as a chunk; it serializes by the same
+    // route, and it is the class a literal rebuild would have flattened.
+    const chunkOld = new AIMessageChunk({
+      id: 'ai-chunk',
+      content: 'partial',
+      additional_kwargs: { reasoning_content: 'CHUNK reasoning' },
+      response_metadata: { output: [{ type: 'reasoning', id: 'rs_chunk_789' }] },
+    })
+    // Last AI message keeps its reasoning by design, so it carries none here —
+    // otherwise it would put the word back in the payload on its own account.
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before(
+      { messages: [new HumanMessage('go'), aiOld, chunkOld, aiLast] },
+      runtime
+    )
+    const updated = (result as { messages: BaseMessage[] }).messages
+
+    // `serde` is a public, typed member of BaseCheckpointSaver
+    // (`dumpsTyped(data: any): Promise<[string, Uint8Array]>`), so this is the
+    // real checkpoint encoder, reached without a cast.
+    const saver = new MemorySaver()
+    const [encoding, bytes] = await saver.serde.dumpsTyped({ messages: updated })
+    expect(encoding).toBe('json')
+    const payload = new TextDecoder().decode(bytes)
+
+    // The leak guard.
+    expect(payload).not.toContain('OLD reasoning')
+    expect(payload).not.toContain('CHUNK reasoning')
+    // And the payload still carries fields the strip never names — proof the
+    // messages really are in these bytes, and that nothing was lost getting
+    // them there.
+    expect(payload).toContain('rs_abc123')
+    expect(payload).toContain('rs_chunk_789')
   })
 })

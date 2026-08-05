@@ -117,20 +117,34 @@ function pruneImageBlocksInHumanMessage(msg: HumanMessage): HumanMessage {
 }
 
 // Clear `additional_kwargs.reasoning_content` (Anthropic extended-thinking,
-// Ollama Qwen3 / deepseek-r1) while preserving every other additional_kwargs
-// key. Returns the same instance when nothing changed.
+// Ollama Qwen3 / deepseek-r1) while preserving every other field of the
+// message — not just the other additional_kwargs keys.
+//
+// The message is COPIED, never re-described: a prototype-preserving clone of
+// its own property descriptors, with only `additional_kwargs` replaced. A
+// rebuild from an object literal silently drops whatever the literal forgot,
+// and two of the casualties are load-bearing. `response_metadata` is where the
+// OpenAI Responses API carries the reasoning-item ids that a following tool
+// call must be paired with, and the robot's default profile is an OpenAI one.
+// `tool_call_chunks` lives only on AIMessageChunk, which `isAIMessage` admits
+// and a literal rebuild would flatten into a plain AIMessage. Copying also
+// keeps the message on the prototype it arrived with, rather than re-minting it
+// under this module's copy of @langchain/core — this repo resolves two.
+//
+// Returns the same instance when nothing changed: the caller counts strips by
+// reference identity. The source is never mutated — only the clone's
+// `additional_kwargs` is replaced, and with a fresh object.
 function stripReasoningContent(msg: AIMessage): AIMessage {
   const ak = msg.additional_kwargs as Record<string, unknown> | undefined;
   if (!ak || ak.reasoning_content == null) return msg;
   const { reasoning_content: _dropped, ...rest } = ak;
   void _dropped;
-  return new AIMessage({
-    id: msg.id,
-    content: msg.content,
-    tool_calls: msg.tool_calls,
-    name: msg.name,
-    additional_kwargs: rest,
-  });
+  const copy = Object.create(
+    Object.getPrototypeOf(msg) as object,
+    Object.getOwnPropertyDescriptors(msg)
+  ) as AIMessage;
+  copy.additional_kwargs = rest;
+  return copy;
 }
 
 // Newest-first list of indices of HumanMessages that carry an image block.
