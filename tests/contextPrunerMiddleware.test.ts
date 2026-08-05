@@ -8,7 +8,7 @@ import {
   RemoveMessage,
   type BaseMessage,
 } from '@langchain/core/messages'
-import { messagesStateReducer } from '@langchain/langgraph'
+import { MemorySaver, messagesStateReducer } from '@langchain/langgraph'
 import {
   createContextPrunerMiddleware,
   estimateTokens,
@@ -838,5 +838,64 @@ describe('contextPrunerMiddleware — RC-28 reasoning strip preserves the whole 
     expect(out.additional_kwargs?.reasoning_content).toBeUndefined()
     expect(out.response_metadata).toEqual({ output: [{ type: 'reasoning', id: 'rs_abc123' }] })
     expect(readUnknownField(out)).toBe('survives')
+  })
+
+  it('the strip holds through the checkpoint serde — the stripped reasoning is absent from the serialized bytes and the un-named field is present', async () => {
+    // Every assertion above reads a property off the returned object. The bytes
+    // langgraph checkpoints are produced by a different route: the message's
+    // toJSON takes its KEY SET from lc_kwargs and its VALUES from the live
+    // instance fields. The strip copies the source's own property descriptors,
+    // so the clone shares lc_kwargs with the source BY REFERENCE and that shared
+    // object still carries the reasoning. Today the instance field wins and the
+    // payload is clean — but that is a property of one library version, not of
+    // this module, and nothing else in this suite would notice it changing.
+    // Assert on the bytes, so a core that resolved lc_kwargs first (or anyone
+    // patching lc_kwargs) is caught here rather than in a checkpoint in
+    // production, where the reasoning would be persisted while every
+    // property-reading test above still passed.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const aiOld = new AIMessage({
+      id: 'ai-old',
+      content: 'thinking',
+      additional_kwargs: { reasoning_content: 'OLD reasoning' },
+      response_metadata: { output: [{ type: 'reasoning', id: 'rs_abc123' }] },
+    })
+    // A streamed turn reaches the strip as a chunk; it serializes by the same
+    // route, and it is the class a literal rebuild would have flattened.
+    const chunkOld = new AIMessageChunk({
+      id: 'ai-chunk',
+      content: 'partial',
+      additional_kwargs: { reasoning_content: 'CHUNK reasoning' },
+      response_metadata: { output: [{ type: 'reasoning', id: 'rs_chunk_789' }] },
+    })
+    // Last AI message keeps its reasoning by design, so it carries none here —
+    // otherwise it would put the word back in the payload on its own account.
+    const aiLast = new AIMessage({ id: 'ai-last', content: 'done' })
+
+    const result = await before(
+      { messages: [new HumanMessage('go'), aiOld, chunkOld, aiLast] },
+      runtime
+    )
+    const updated = (result as { messages: BaseMessage[] }).messages
+
+    // `serde` is a public, typed member of BaseCheckpointSaver
+    // (`dumpsTyped(data: any): Promise<[string, Uint8Array]>`), so this is the
+    // real checkpoint encoder, reached without a cast.
+    const saver = new MemorySaver()
+    const [encoding, bytes] = await saver.serde.dumpsTyped({ messages: updated })
+    expect(encoding).toBe('json')
+    const payload = new TextDecoder().decode(bytes)
+
+    // The leak guard.
+    expect(payload).not.toContain('OLD reasoning')
+    expect(payload).not.toContain('CHUNK reasoning')
+    // And the payload still carries fields the strip never names — proof the
+    // messages really are in these bytes, and that nothing was lost getting
+    // them there.
+    expect(payload).toContain('rs_abc123')
+    expect(payload).toContain('rs_chunk_789')
   })
 })
