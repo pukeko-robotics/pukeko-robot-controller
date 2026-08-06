@@ -899,3 +899,425 @@ describe('contextPrunerMiddleware — RC-28 reasoning strip preserves the whole 
     expect(payload).toContain('rs_chunk_789')
   })
 })
+
+// ───────────────────────────────────────────────────────────────────────────
+// RC-29 — the two image strips copy the message instead of re-describing it
+//
+// Same defect class as RC-28, two functions earlier in the same file.
+// stripToolMessageImageData rebuilt every motion/capture ToolMessage from an
+// object literal naming four fields, so `status`, `artifact`,
+// `response_metadata` and `additional_kwargs` were dropped. `status` is the
+// serious one and the loss was UNCONDITIONAL: step 1 of the prune runs on every
+// motion/capture result, not only old ones, so a result carrying
+// `status: 'error'` came back undefined and a failed motion was
+// indistinguishable from a completed one. pruneImageBlocksInHumanMessage had
+// the milder version of the same shape, dropping `additional_kwargs` and
+// `response_metadata`.
+//
+// There is one CLASS GUARD per function: it asserts on a property the
+// production code does not name anywhere, so it stays red under any
+// field-enumerating rebuild, however long the enumeration. No shared helper was
+// extracted for the three strips and none is assumed here — the guard is
+// written once per function on purpose.
+//
+// Every preservation assertion sits beside an assertion that the strip actually
+// fired, because a function that simply returned its argument would satisfy the
+// preservation half on its own.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Read/write a property the production code has never heard of. Cast because no
+// message type declares it — that is exactly the point.
+function stampUnnamedField(msg: BaseMessage, value: unknown): void {
+  ;(msg as unknown as Record<string, unknown>).field_no_one_enumerated = value
+}
+function readUnnamedField(msg: BaseMessage): unknown {
+  return (msg as unknown as Record<string, unknown>).field_no_one_enumerated
+}
+
+describe('contextPrunerMiddleware — RC-29 ToolMessage image-data strip preserves the whole message', () => {
+  const FRAME_BYTES = 'BASE64FRAMEMARKER'
+
+  function motionResultWithMarker(motion = 'turn_right (steps=1)'): string {
+    return JSON.stringify({
+      mimeType: 'image/jpeg',
+      data: `${FRAME_BYTES}${'X'.repeat(64)}`,
+      motion,
+    })
+  }
+
+  it('CLASS GUARD: a field the strip does not name survives the round trip', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const motionTool = new ToolMessage({
+      id: 'tm-1',
+      content: motionResultWithMarker(),
+      tool_call_id: 'tc-1',
+      name: 'turn_right',
+    })
+    stampUnnamedField(motionTool, { anything: 'at all' })
+
+    const result = await before({ messages: [new HumanMessage('go'), motionTool] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as ToolMessage
+
+    // The strip fired…
+    const parsed = JSON.parse(out.content as string)
+    expect(parsed.data).toBeUndefined()
+    expect(parsed.dataDropped).toBe(true)
+    // …and it carried across a field nothing in the implementation mentions.
+    expect(readUnnamedField(out)).toEqual({ anything: 'at all' })
+    // Same class it arrived as. Compared by prototype, never instanceof: this
+    // repo resolves two copies of @langchain/core, so an instance check against
+    // an imported message class is unreliable here.
+    expect(Object.getPrototypeOf(out)).toBe(Object.getPrototypeOf(motionTool))
+    // The caller still holds the input array; the source must be untouched.
+    expect(motionTool.content as string).toContain(FRAME_BYTES)
+    expect(out).not.toBe(motionTool)
+  })
+
+  it('preserves status — a motion that FAILED must not come back indistinguishable from one that completed', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const motionTool = new ToolMessage({
+      id: 'tm-1',
+      content: motionResultWithMarker(),
+      tool_call_id: 'tc-1',
+      name: 'turn_right',
+      status: 'error',
+      artifact: { frameId: 'FRAMEARTIFACTMARKER', width: 640 },
+      response_metadata: { bridge: 'robot-bridge/2', attempt: 2 },
+      additional_kwargs: { servo_fault: 'left_hip stalled' },
+    })
+
+    const result = await before({ messages: [new HumanMessage('go'), motionTool] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as ToolMessage
+
+    // The strip fired…
+    const parsed = JSON.parse(out.content as string)
+    expect(parsed.data).toBeUndefined()
+    expect(parsed.dataDropped).toBe(true)
+    expect(parsed.motion).toBe('turn_right (steps=1)')
+
+    // …and every field the old literal rebuild forgot is still here. `status`
+    // first: this is the one the node is named for.
+    expect(out.status).toBe('error')
+    expect(out.artifact).toEqual({ frameId: 'FRAMEARTIFACTMARKER', width: 640 })
+    expect(out.response_metadata).toEqual({ bridge: 'robot-bridge/2', attempt: 2 })
+    expect(out.additional_kwargs).toEqual({ servo_fault: 'left_hip stalled' })
+    // The fields the literal did remember are still correct too.
+    expect(out.id).toBe('tm-1')
+    expect(out.tool_call_id).toBe('tc-1')
+    expect(out.name).toBe('turn_right')
+  })
+
+  it('returns the same object reference when there is nothing to strip, so toolImageDataStripped counts only changed messages', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const llm = makeStubLlm()
+      const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      const withData = new ToolMessage({
+        id: 'tm-1',
+        content: motionResultWithMarker(),
+        tool_call_id: 'tc-1',
+        name: 'turn_right',
+      })
+      // A motion result that carries no frame.
+      const noData = new ToolMessage({
+        id: 'tm-2',
+        content: JSON.stringify({ motion: 'turn_left', ok: true }),
+        tool_call_id: 'tc-2',
+        name: 'turn_left',
+      })
+      // Not an image-bearing tool, so its `data` is none of this function's
+      // business.
+      const nonImageTool = new ToolMessage({
+        id: 'tm-3',
+        content: JSON.stringify({ data: 'ZZZZ' }),
+        tool_call_id: 'tc-3',
+        name: 'finish_task',
+      })
+      // Content that is not JSON at all.
+      const notJson = new ToolMessage({
+        id: 'tm-4',
+        content: 'plain text result',
+        tool_call_id: 'tc-4',
+        name: 'capture_image',
+      })
+
+      const result = await before(
+        { messages: [new HumanMessage('go'), withData, noData, nonImageTool, notJson] },
+        runtime
+      )
+      const updated = (result as { messages: BaseMessage[] }).messages
+
+      // The changed one is a new object…
+      expect(updated[2]).not.toBe(withData)
+      // …and every untouched one comes back as the very same object.
+      expect(updated[3]).toBe(noData)
+      expect(updated[4]).toBe(nonImageTool)
+      expect(updated[5]).toBe(notJson)
+
+      // The per-call summary line reports exactly one strip. The stat is derived
+      // from reference identity, so if the strip ever returned a fresh object
+      // for an unchanged message this would read 4.
+      const line = logSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes('→ LLM'))
+      expect(line).toBeDefined()
+      expect(line).toContain('tool-data:1')
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it('the dropped frame is unreachable by every route — instance content, lc_kwargs and the checkpoint bytes — while status rides into them', async () => {
+    // Copying a message from its own property descriptors shares `lc_kwargs`
+    // with the source BY REFERENCE, and that bag still holds the original
+    // content string. Here — unlike in the reasoning strip — the field being
+    // rewritten IS the payload this function exists to free, so a bare
+    // descriptor copy would turn a byte-dropping function into a byte-retaining
+    // one: the frame would stay reachable for the life of the thread (one per
+    // motion), and any serializer resolving values from `lc_kwargs` rather than
+    // the live instance field would write the bytes straight back into the
+    // checkpoint. The strip therefore replaces `lc_kwargs` too, and this test is
+    // what pins that: it checks all three routes rather than only the property.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const motionTool = new ToolMessage({
+      id: 'tm-1',
+      content: motionResultWithMarker(),
+      tool_call_id: 'tc-1',
+      name: 'turn_right',
+      status: 'error',
+      artifact: { frameId: 'FRAMEARTIFACTMARKER' },
+    })
+
+    const result = await before({ messages: [new HumanMessage('go'), motionTool] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as ToolMessage
+
+    expect(out.content as string).not.toContain(FRAME_BYTES)
+    expect(JSON.stringify(out.lc_kwargs)).not.toContain(FRAME_BYTES)
+
+    // `serde` is a public, typed member of BaseCheckpointSaver, so this is the
+    // real checkpoint encoder, reached without a cast.
+    const saver = new MemorySaver()
+    const [encoding, bytes] = await saver.serde.dumpsTyped({ messages: updated })
+    expect(encoding).toBe('json')
+    const payload = new TextDecoder().decode(bytes)
+
+    expect(payload).not.toContain(FRAME_BYTES)
+    // And the payload carries the fields the old rebuild dropped — proof the
+    // message really is in these bytes, so the assertion above cannot pass on an
+    // empty payload.
+    expect(payload).toContain('"status":"error"')
+    expect(payload).toContain('FRAMEARTIFACTMARKER')
+  })
+})
+
+describe('contextPrunerMiddleware — RC-29 human image-block prune preserves the whole message', () => {
+  const IMAGE_BYTES = 'HUMANIMAGEMARKER'
+
+  function markedImageBlock() {
+    return { type: 'image_url' as const, image_url: `data:image/jpeg;base64,${IMAGE_BYTES}` }
+  }
+  function hasImage(m: BaseMessage): boolean {
+    return (
+      Array.isArray(m.content) &&
+      (m.content as Array<{ type?: string }>).some(
+        (b) => b.type === 'image' || b.type === 'image_url'
+      )
+    )
+  }
+
+  it('CLASS GUARD: a field the prune does not name survives the round trip', async () => {
+    const llm = makeStubLlm()
+    // Default keepLatestImages = 1, so the older of the two is pruned.
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const older = new HumanMessage({
+      id: 'h-old',
+      content: [{ type: 'text', text: 'Frame 1' }, markedImageBlock()],
+    })
+    stampUnnamedField(older, { anything: 'at all' })
+    const newer = new HumanMessage({
+      id: 'h-new',
+      content: [{ type: 'text', text: 'Frame 2' }, markedImageBlock()],
+    })
+
+    const result = await before({ messages: [new HumanMessage('go'), older, newer] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as HumanMessage
+
+    // The prune fired…
+    expect(hasImage(out)).toBe(false)
+    expect((out.content as Array<{ text?: string }>)[0].text).toBe('Frame 1')
+    // …and it carried across a field nothing in the implementation mentions.
+    expect(readUnnamedField(out)).toEqual({ anything: 'at all' })
+    // Same class it arrived as — by prototype, never instanceof (dual
+    // @langchain/core in this repo).
+    expect(Object.getPrototypeOf(out)).toBe(Object.getPrototypeOf(older))
+    // Source untouched, and the message that was NOT pruned comes back as the
+    // very same object — mechanicalPrune counts strips by reference identity.
+    expect(hasImage(older)).toBe(true)
+    expect(out).not.toBe(older)
+    expect(updated[3]).toBe(newer)
+  })
+
+  it('preserves additional_kwargs and response_metadata on an aged-out image turn', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const older = new HumanMessage({
+      id: 'h-old',
+      name: 'operator',
+      content: [{ type: 'text', text: 'Frame 1' }, markedImageBlock()],
+      additional_kwargs: { capture_ts: 1717, source: 'front_cam' },
+      response_metadata: { bridge: 'robot-bridge/2' },
+    })
+    const newer = new HumanMessage({
+      id: 'h-new',
+      content: [{ type: 'text', text: 'Frame 2' }, markedImageBlock()],
+    })
+
+    const result = await before({ messages: [new HumanMessage('go'), older, newer] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as HumanMessage
+
+    // The prune fired…
+    expect(hasImage(out)).toBe(false)
+    // …and the two fields the old literal rebuild dropped are still here.
+    expect(out.additional_kwargs).toEqual({ capture_ts: 1717, source: 'front_cam' })
+    expect(out.response_metadata).toEqual({ bridge: 'robot-bridge/2' })
+    // The fields the literal did remember are still correct too.
+    expect(out.id).toBe('h-old')
+    expect(out.name).toBe('operator')
+  })
+
+  it('keeps the caption-less fallback and still preserves the rest of the message', async () => {
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    // Nothing survives the filter, so the "[image dropped]" placeholder stands
+    // in for the slot. That branch builds its own content array, which is
+    // exactly where a rebuild is most tempting.
+    const older = new HumanMessage({
+      id: 'h-old',
+      content: [markedImageBlock()],
+      additional_kwargs: { source: 'front_cam' },
+    })
+    stampUnnamedField(older, 'survives the fallback branch too')
+    const newer = new HumanMessage({
+      id: 'h-new',
+      content: [{ type: 'text', text: 'Frame 2' }, markedImageBlock()],
+    })
+
+    const result = await before({ messages: [new HumanMessage('go'), older, newer] }, runtime)
+    const updated = (result as { messages: BaseMessage[] }).messages
+    const out = updated[2] as HumanMessage
+
+    expect(hasImage(out)).toBe(false)
+    expect(out.content).toEqual([{ type: 'text', text: '[image dropped]' }])
+    expect(readUnnamedField(out)).toBe('survives the fallback branch too')
+    expect(out.additional_kwargs).toEqual({ source: 'front_cam' })
+  })
+
+  it('the dropped image bytes are unreachable by every route, and humanImagesStripped counts only changed messages', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const llm = makeStubLlm()
+      const mw = createContextPrunerMiddleware({ llm }) as HookContainer
+      const before = getHook(mw.beforeModel)
+
+      const plain = new HumanMessage({ id: 'h-plain', content: 'no images here' })
+      const older = new HumanMessage({
+        id: 'h-old',
+        content: [{ type: 'text', text: 'Frame 1' }, markedImageBlock()],
+        response_metadata: { bridge: 'HUMANMETAMARKER' },
+      })
+      // The newest image message keeps its blocks by design, so it would put
+      // IMAGE_BYTES back into the payload on its own account — it carries an
+      // unmarked block instead.
+      const newer = new HumanMessage({
+        id: 'h-new',
+        content: [
+          { type: 'text', text: 'Frame 2' },
+          { type: 'image_url', image_url: 'data:image/jpeg;base64,KEPTFRAME' },
+        ],
+      })
+
+      const result = await before({ messages: [plain, older, newer] }, runtime)
+      const updated = (result as { messages: BaseMessage[] }).messages
+      const out = updated[2] as HumanMessage
+
+      expect(JSON.stringify(out.content)).not.toContain(IMAGE_BYTES)
+      expect(JSON.stringify(out.lc_kwargs)).not.toContain(IMAGE_BYTES)
+
+      const saver = new MemorySaver()
+      const [encoding, bytes] = await saver.serde.dumpsTyped({ messages: updated })
+      expect(encoding).toBe('json')
+      const payload = new TextDecoder().decode(bytes)
+
+      expect(payload).not.toContain(IMAGE_BYTES)
+      // Proof the messages really are in these bytes: the field the old rebuild
+      // dropped is present, and so is the frame that was deliberately kept.
+      expect(payload).toContain('HUMANMETAMARKER')
+      expect(payload).toContain('KEPTFRAME')
+
+      // Exactly one human message changed.
+      const line = logSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes('→ LLM'))
+      expect(line).toBeDefined()
+      expect(line).toContain('human-images:1')
+    } finally {
+      logSpy.mockRestore()
+    }
+  })
+
+  it('an image-free content array comes back by reference on the summary path, where dropAllImageBlocks reaches this same function', async () => {
+    // Both strips are also reached from dropAllImageBlocks, which sanitizes the
+    // head slice fed to the summarizer. In mechanicalPrune the "nothing changed"
+    // early return is protected by selection — only messages that HAVE an image
+    // block are ever passed in — so this path is the only place the contract is
+    // observable, and without it a prune that always cloned would go unnoticed.
+    const llm = makeStubLlm()
+    const mw = createContextPrunerMiddleware({
+      llm,
+      maxContextTokens: 1000,
+      summarizeAtFraction: 0.5,
+      imageTokenBudget: 50,
+    }) as HookContainer
+    const before = getHook(mw.beforeModel)
+
+    const userMsg = new HumanMessage('Find the cone.')
+    const textArray = new HumanMessage({
+      id: 'h-text',
+      content: [{ type: 'text', text: 'C'.repeat(400) }],
+    })
+    const filler: BaseMessage[] = []
+    for (let i = 0; i < 6; i++) filler.push(new AIMessage('B'.repeat(400)))
+    const motionAi = new AIMessage({
+      content: '',
+      tool_calls: [{ name: 'move_forward', args: { steps: 2 }, id: 'tc' }],
+    })
+    const motionTool = new ToolMessage({
+      content: motionResultJson('move_forward (steps=2)'),
+      tool_call_id: 'tc',
+      name: 'move_forward',
+    })
+
+    await before({ messages: [userMsg, textArray, ...filler, motionAi, motionTool] }, runtime)
+    expect(llm.invoke).toHaveBeenCalledTimes(1)
+    const sanitized = llm.invoke.mock.calls[0][0] as BaseMessage[]
+    expect(sanitized.find((m) => m.id === 'h-text')).toBe(textArray)
+  })
+})
