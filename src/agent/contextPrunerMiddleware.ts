@@ -71,6 +71,26 @@ interface MaybeBlock {
 // content. The same image is re-emitted one message later as an `image_url` /
 // `image` block by frontendImageInjectionMiddleware; the bytes inside the
 // ToolMessage are pure dead weight to the model.
+//
+// The message is COPIED, never re-described (same shape as
+// stripReasoningContent below). A rebuild from an object literal keeps only the
+// fields the literal happens to name, and the casualty that matters most here
+// is `status`: this strip runs on EVERY motion/capture tool result, not only
+// old ones, so a result carrying `status: 'error'` came back `undefined` and a
+// failed motion became indistinguishable from a completed one. `artifact`,
+// `response_metadata` and `additional_kwargs` went the same way.
+//
+// `lc_kwargs` is replaced too, unlike in stripReasoningContent, because here the
+// field being rewritten IS the payload this function exists to free. A plain
+// descriptor copy shares the source's `lc_kwargs` by reference, and that object
+// still holds the original content string — so the base64 frame this call just
+// dropped would stay reachable for the life of the thread (one per motion), and
+// any serializer that resolved values from `lc_kwargs` rather than the live
+// instance field would put the bytes straight back into the checkpoint. The
+// replacement is a fresh object; the source is never mutated.
+//
+// Returns the same instance when nothing changed: the caller counts strips by
+// reference identity.
 function stripToolMessageImageData(msg: ToolMessage): ToolMessage {
   if (typeof msg.content !== 'string') return msg;
   if (!msg.name || !IMAGE_TOOL_NAMES.has(msg.name)) return msg;
@@ -84,13 +104,14 @@ function stripToolMessageImageData(msg: ToolMessage): ToolMessage {
   if (typeof parsed.data !== 'string' || parsed.data.length === 0) return msg;
   const { data: _dropped, ...rest } = parsed;
   void _dropped;
-  const next = { ...rest, dataDropped: true };
-  return new ToolMessage({
-    id: msg.id,
-    content: JSON.stringify(next),
-    tool_call_id: msg.tool_call_id,
-    name: msg.name,
-  });
+  const nextContent = JSON.stringify({ ...rest, dataDropped: true });
+  const copy = Object.create(
+    Object.getPrototypeOf(msg) as object,
+    Object.getOwnPropertyDescriptors(msg)
+  ) as ToolMessage;
+  copy.content = nextContent;
+  copy.lc_kwargs = { ...msg.lc_kwargs, content: nextContent };
+  return copy;
 }
 
 function hasImageBlock(content: unknown): boolean {
@@ -103,6 +124,16 @@ function hasImageBlock(content: unknown): boolean {
 // Strip image blocks out of a HumanMessage's content array, keeping the
 // leading text caption. If nothing useful survives, return a single
 // "[image dropped]" text block so the model still sees the slot.
+//
+// Copied rather than re-described, for the same reason as the two strips around
+// it: the literal rebuild this replaces named only `id`, `content` and `name`,
+// so `additional_kwargs` and `response_metadata` were dropped from every
+// image-bearing turn that aged out. `lc_kwargs` is replaced alongside `content`
+// so the image blocks being dropped do not stay reachable through the source's
+// shared bag — see stripToolMessageImageData for the full reasoning.
+//
+// Returns the same instance when nothing changed: the caller counts strips by
+// reference identity.
 function pruneImageBlocksInHumanMessage(msg: HumanMessage): HumanMessage {
   if (!Array.isArray(msg.content)) return msg;
   const textOnly = (msg.content as MaybeBlock[]).filter(
@@ -113,7 +144,13 @@ function pruneImageBlocksInHumanMessage(msg: HumanMessage): HumanMessage {
     textOnly.length === 0
       ? ([{ type: 'text', text: '[image dropped]' }] as unknown as HumanMessage['content'])
       : (textOnly as unknown as HumanMessage['content']);
-  return new HumanMessage({ id: msg.id, content: newContent, name: msg.name });
+  const copy = Object.create(
+    Object.getPrototypeOf(msg) as object,
+    Object.getOwnPropertyDescriptors(msg)
+  ) as HumanMessage;
+  copy.content = newContent;
+  copy.lc_kwargs = { ...msg.lc_kwargs, content: newContent };
+  return copy;
 }
 
 // Clear `additional_kwargs.reasoning_content` (Anthropic extended-thinking,
