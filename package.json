@@ -21,7 +21,7 @@
     "type-check": "vue-tsc --build"
   },
   "dependencies": {
-    "@copilotkit/vue": "1.61.0",
+    "@copilotkit/vue": "1.66.4",
     "@galvanized-pukeko/vue-ui": "^0.1.1",
     "@gaunt-sloth/agent": "2.0.0-alpha.24",
     "@gaunt-sloth/core": "2.0.0-alpha.24",
