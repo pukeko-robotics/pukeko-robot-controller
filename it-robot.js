@@ -13,8 +13,14 @@ import { spawn } from 'child_process';
 import { createWriteStream } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { resolveLocalBinOrExit, spawnLocalBin } from './scripts/local-bin.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Resolve Playwright BEFORE anything is started. It is not needed until the very
+// end of the run, but a missing binary must abort while there is still nothing to
+// tear down — failing after three detached process groups are up leaks them.
+const PLAYWRIGHT_BIN = resolveLocalBinOrExit('@playwright/test', 'playwright', __dirname);
 
 // OPS-8: load the worktree-root `.env` so a shifted allocation moves every port
 // together. Inline env vars still win (loadEnvFile does not clobber process.env).
@@ -123,7 +129,7 @@ try {
   ]);
   console.log('\n[it-robot] running Playwright...\n');
   code = await new Promise((res) => {
-    const t = spawn('npx', ['playwright', 'test', ...process.argv.slice(2)], {
+    const t = spawnLocalBin(PLAYWRIGHT_BIN, ['test', ...process.argv.slice(2)], {
       cwd: __dirname,
       stdio: 'inherit',
     });

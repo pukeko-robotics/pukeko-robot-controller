@@ -402,9 +402,9 @@ describe('toolFreeModel against the real provider classes (offline, no key spend
   })
 
   it('ScriptedRobotChatModel comes back as the SAME instance — the e2e seam is untouched', () => {
-    // The PUKEKO_FAKE_LLM path (server/createLlm.ts). This is the property the
-    // `pnpm run e2e` gate would have covered; that script spawns npx, which is
-    // barred on this machine, so the property is pinned here instead.
+    // The PUKEKO_FAKE_LLM path (server/createLlm.ts). The `pnpm run e2e` gate
+    // covers this end to end, but only when a browser and three live services are
+    // available; pinning it here keeps the property under the unit suite too.
     const scripted = new ScriptedRobotChatModel()
     expect(toolFreeModel(scripted)).toBe(scripted)
   })

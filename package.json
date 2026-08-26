@@ -14,7 +14,7 @@
     "server": "node --env-file-if-exists=.env --import=tsx ./server/index.ts",
     "stub": "node --env-file-if-exists=.env --import=tsx robot-stub/index.ts",
     "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"pnpm:server\" \"pnpm:dev\"",
-    "test": "vitest run",
+    "test": "node scripts/check-no-bare-launchers.mjs && vitest run",
     "e2e": "node it-robot.js",
     "e2e:live": "E2E_LIVE=1 node it-robot.js",
     "build": "vue-tsc --build && vite build",
