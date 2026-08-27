@@ -1,0 +1,102 @@
+name: Unit tests
+
+# OPS-74: the ordinary-path gate. Runs `pnpm test` on every push and every pull
+# request. Before this workflow existed, `pnpm test` ran in CI on no trigger at
+# all in this repository, which made the QA-19 guard below advisory — it fired
+# only when somebody chose to run the suite by hand, which is exactly the
+# population it was written to protect against.
+#
+# `pnpm test` here is two chained steps, in this order:
+#   1. scripts/check-no-bare-launchers.mjs — the QA-19 guard against one-shot
+#      package runners, the commands that resolve a bare name against the public
+#      registry and execute whatever comes back. Making this binding is the main
+#      reason the trigger exists.
+#   2. vitest run — the unit suite.
+#
+# WHY THIS JOB CHECKS OUT TWO REPOSITORIES. pnpm-workspace.yaml carries the
+# temporary PLAT-22 override redirecting @galvanized-pukeko/vue-ui to
+# `file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui`, and pnpm-lock.yaml
+# records it as a directory resolution. Without that directory on disk,
+# `pnpm install --frozen-lockfile` here fails with ENOENT before a single test
+# runs — measured, not inferred. So galvanized-pukeko is checked out beside this
+# repository and its vue-ui package is built first: a file: dependency packs
+# without its dist/ when the target is unbuilt, and vue-ui's entry point lives in
+# dist/, so an unbuilt sibling surfaces later as a module-not-found that reads
+# like a code error and is not one.
+#
+# The consequence is a real coupling, and it should be weighed rather than
+# absorbed: a green tick here is no longer a statement about this repository
+# alone. It also asserts that galvanized-pukeko main installs and builds vue-ui.
+# When the PLAT-22 redirect is dropped and this repository takes a published
+# @galvanized-pukeko/vue-ui from the registry again, delete the second checkout
+# and the two galvanized steps; the rest of this job then matches
+# galvanized-pukeko's own unit-tests.yml exactly.
+#
+# WHAT THIS CHECK DOES NOT COVER. A green tick here is narrower than "CI passed":
+#   - No type-check and no build. `pnpm run type-check` (vue-tsc --build) and
+#     `pnpm run build` are not part of `pnpm test`, so a type error can land with
+#     this check green — including in the tooling files OPS-75 brought behind the
+#     type-check gate.
+#   - No end-to-end tests. `pnpm run e2e` (it-robot.js) needs a booted stack and
+#     has no CI home anywhere in this repository.
+#   - No release pipeline. This repository still has no release workflow.
+#
+# WHY THE E2E HALF IS NOT ON THIS TRIGGER. Beyond needing a booted server and a
+# browser, a pull request from a fork gets a read-only token and no repository
+# secrets, so a live end-to-end run could not authenticate to a model provider at
+# all and would fail for a reason that says nothing about the change. It belongs
+# on a deliberate, secret-bearing trigger of its own.
+#
+# `push` is deliberately unfiltered, matching lockfile-guard.yml. A same-repo pull
+# request therefore runs this twice, once for each trigger; that is the existing
+# repository convention and the cost is one short job.
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+jobs:
+  unit-tests:
+    name: Guard and unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        node-version: [24.x]
+    steps:
+      - name: Check out pukeko-robot-controller
+        uses: actions/checkout@v6
+        with:
+          path: pukeko-robot-controller
+      # Must land inside GITHUB_WORKSPACE, so both repositories sit in
+      # subdirectories and the file: path above resolves between them.
+      - name: Check out the galvanized-pukeko sibling
+        uses: actions/checkout@v6
+        with:
+          repository: pukeko-robotics/galvanized-pukeko
+          ref: main
+          path: galvanized-pukeko
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+          cache-dependency-path: |
+            pukeko-robot-controller/pnpm-lock.yaml
+            galvanized-pukeko/pnpm-lock.yaml
+      - name: Install galvanized-pukeko
+        working-directory: galvanized-pukeko
+        run: pnpm install --frozen-lockfile
+      - name: Build vue-ui
+        working-directory: galvanized-pukeko
+        run: pnpm --filter @galvanized-pukeko/vue-ui build
+      - name: Install dependencies
+        working-directory: pukeko-robot-controller
+        run: pnpm install --frozen-lockfile
+      - name: Run Tests
+        working-directory: pukeko-robot-controller
+        run: pnpm test
