@@ -1,0 +1,47 @@
+{
+  // OPS-75 — the repo's tooling files, which no other project reaches.
+  //
+  // `tsconfig.app.json` covers `src/`, `tsconfig.node.json` covers the server, the
+  // robot stub and the two vite configs, and `tsconfig.vitest.json` covers `tests/`.
+  // Everything else a human runs by hand — the e2e harness, the Playwright config and
+  // its spec, the example config, the guard scripts — sat outside all three, so a
+  // syntax error, a broken relative path or a renamed export in any of them survived
+  // every gate and surfaced only the next time someone ran the file. Adding this
+  // project to the solution's `references` puts them behind `pnpm run type-check`
+  // and `pnpm run build`.
+  //
+  // `tests/gatedSourceCoverage.test.ts` is what keeps this true: it reads the
+  // denominator and fails naming any tracked source file that no project enumerates.
+  "extends": "@tsconfig/node22/tsconfig.json",
+  "include": [
+    "it-robot.js",
+    "playwright.config.ts",
+    "pukeko.config.example.ts",
+    "e2e/**/*",
+    "scripts/**/*"
+  ],
+  "compilerOptions": {
+    "noEmit": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tooling.tsbuildinfo",
+    // Match `tsconfig.node.json`: these run under node/tsx or a bundler, not node16
+    // resolution, and `pukeko.config.example.ts` imports `./src/lib/config.js` the
+    // same way `server/loadConfig.ts` already does.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+
+    // `allowJs` brings `it-robot.js` and the two `scripts/*.mjs` into the program so
+    // they are PARSED — a syntax error in any of them now fails the gate.
+    "allowJs": true,
+    // `checkJs` stays OFF, and that is a measurement rather than a preference.
+    // Turning it on reports 29 errors across those three files; relaxing
+    // `noImplicitAny` and `useUnknownInCatchVariables` still leaves 11, and every one
+    // of those is an @types/node artifact rather than a defect — spreading
+    // `process.env` drops its index signature, and the `stdio` overloads of `spawn`
+    // intersect to `never`. Reaching green would mean annotating a harness that can
+    // only be exercised against a booted stack and a real robot. So the three .ts
+    // files here are fully type-checked under strict, and the JS files are
+    // syntax-checked. Anything stronger for them belongs in its own ticket.
+    "checkJs": false
+  }
+}
