@@ -13,6 +13,29 @@ name: Unit tests
 #      reason the trigger exists.
 #   2. vitest run — the unit suite.
 #
+# OPS-85 then runs `pnpm run build`. That is `vue-tsc --build && vite build`, so
+# it SUBSUMES `pnpm run type-check`, which is `vue-tsc --build` on its own.
+# Running both would be two names for one pass, and a reader seeing both listed
+# would reasonably assume they covered different things. The vue-tsc half is a
+# solution build over all four projects in tsconfig.json's references, so it
+# reaches src/, the server and robot stub, tests/, and the tooling files OPS-75
+# brought behind the gate.
+#
+# WHY THE SAME JOB, NOT A PARALLEL ONE. A parallel job is a second independently
+# named check, and each name has to be added to branch protection separately —
+# operational cost paid by a human, for no extra coverage. Here it would also have
+# to duplicate this job's entire two-repository setup: both checkouts, corepack,
+# node, two installs and the vue-ui build, roughly doubling the CI time and
+# creating a second place to keep in sync with the coupling described below. The
+# price of a single job is fail-fast: an earlier failure masks a later one until
+# it is fixed, which is acceptable for a gate whose purpose is to stop the merge
+# either way.
+#
+# The build runs AFTER `pnpm test`, because the QA-19 guard is the first link of
+# that chained command and must stay the first thing this job runs — a job that
+# type-checks before it checks for one-shot package runners has put the cheap
+# convenience ahead of the reason the trigger exists.
+#
 # WHY THIS JOB CHECKS OUT TWO REPOSITORIES. pnpm-workspace.yaml carries the
 # temporary PLAT-22 override redirecting @galvanized-pukeko/vue-ui to
 # `file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui`, and pnpm-lock.yaml
@@ -32,11 +55,18 @@ name: Unit tests
 # and the two galvanized steps; the rest of this job then matches
 # galvanized-pukeko's own unit-tests.yml exactly.
 #
+# The build step deepens that coupling rather than merely inheriting it: vue-tsc
+# resolves @galvanized-pukeko/vue-ui to the sibling checkout's GENERATED
+# dist/index.d.ts, so this repository's type-check now runs against
+# galvanized-pukeko main's types rather than against the published version this
+# package.json pins. A breaking type change landing there turns this job red.
+#
 # WHAT THIS CHECK DOES NOT COVER. A green tick here is narrower than "CI passed":
-#   - No type-check and no build. `pnpm run type-check` (vue-tsc --build) and
-#     `pnpm run build` are not part of `pnpm test`, so a type error can land with
-#     this check green — including in the tooling files OPS-75 brought behind the
-#     type-check gate.
+#   - No type-checking of the tooling JavaScript. tsconfig.tooling.json sets
+#     `allowJs: true` with `checkJs: false`, so it-robot.js and the scripts/*.mjs
+#     files are PARSED — a syntax error in one fails this job — but their types
+#     are not checked. That is the deliberate OPS-75 boundary, measured rather
+#     than assumed, and the reasoning is recorded in tsconfig.tooling.json itself.
 #   - No end-to-end tests. `pnpm run e2e` (it-robot.js) needs a booted stack and
 #     has no CI home anywhere in this repository.
 #   - No release pipeline. This repository still has no release workflow.
@@ -100,3 +130,6 @@ jobs:
       - name: Run Tests
         working-directory: pukeko-robot-controller
         run: pnpm test
+      - name: Build
+        working-directory: pukeko-robot-controller
+        run: pnpm run build
