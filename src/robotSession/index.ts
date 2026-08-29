@@ -8,3 +8,22 @@ export {
   type RobotCapabilities,
   type BrowserCapabilities,
 } from './interpreter.js';
+export {
+  REAL_ROBOT_WORLD_ID,
+  SIMULATED_WORLD_ID,
+  WORLDS,
+  DEFAULT_ROBOT_HOST,
+  DEFAULT_EMULATOR_HOST,
+  CAPTURE_PATH,
+  resolveHost,
+  hostForWorld,
+  captureUrlForWorld,
+  createWorldCapabilities,
+  createWorldSession,
+  type WorldId,
+  type WorldOption,
+  type WorldHosts,
+  type WebcamPanelLike,
+  type WorldCapabilitiesDeps,
+  type WorldSessionOptions,
+} from './worlds.js';

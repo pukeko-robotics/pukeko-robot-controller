@@ -42,8 +42,21 @@ import {
 import { CopilotKitProvider, HttpAgent } from '@copilotkit/vue/v2'
 import { HeadlessChat } from '@galvanized-pukeko/vue-ui/copilot'
 import { getRobotPreset, listPresets } from './agent/robotPresets/index.js'
-import { RobotSession } from './robotSession/index.js'
+import {
+  captureUrlForWorld,
+  createWorldCapabilities,
+  createWorldSession,
+  DEFAULT_EMULATOR_HOST,
+  DEFAULT_ROBOT_HOST,
+  REAL_ROBOT_WORLD_ID,
+  resolveHost,
+  SIMULATED_WORLD_ID,
+  WORLDS,
+  type RobotSession,
+  type WorldId,
+} from './robotSession/index.js'
 import PresetPicker from './components/PresetPicker.vue'
+import WorldPicker from './components/WorldPicker.vue'
 import ToolBelt from './components/ToolBelt.vue'
 import RobotsBrains from './components/RobotsBrains.vue'
 import Splitter from './components/Splitter.vue'
@@ -63,7 +76,13 @@ const tutorZoneEl = ref<HTMLElement | null>(null)
 // META-5 UX-loop detail, not something this task needs to settle.
 const splitPercent = ref(57)
 
-const ROBOT_HOST = import.meta.env.VITE_ROBOT_HOST ?? '192.168.4.1'
+// RC-44: one host per world. The emulator's is configurable the same way the
+// robot's is — a build-time VITE_ var, defaulted to where `pnpm run emulator`
+// listens (ROBOT_EMULATOR_PORT's own default). See robotSession/worlds.ts.
+const HOSTS = {
+  robotHost: resolveHost(import.meta.env.VITE_ROBOT_HOST, DEFAULT_ROBOT_HOST),
+  emulatorHost: resolveHost(import.meta.env.VITE_ROBOT_EMULATOR_HOST, DEFAULT_EMULATOR_HOST),
+}
 
 // EXT-6 Robot's Brains: the Pilot's real system prompt, baked in at build
 // time (vite.config.ts reads system-prompt.md; see env.d.ts). Same guarded
@@ -93,18 +112,54 @@ const beltTools = computed(() =>
 // only instantiates it, supplies the browser-side capabilities backed by the
 // mounted <PkWebcamPanel>, and renders. The webcam methods are read lazily
 // through the ref so the panel need not exist yet at construction time.
-function makeSession(presetId: string): RobotSession {
-  return new RobotSession({
-    robotHost: ROBOT_HOST,
+
+// RC-44: which world the student is driving. Real hardware by default — that
+// is today's behaviour, unchanged. The choice is a robot-TARGET choice, not a
+// camera one: the simulated world only advances when the motion endpoints
+// actually reach the emulator, so frames AND commands both follow it.
+const activeWorldId = ref<WorldId>(REAL_ROBOT_WORLD_ID)
+const isSimulated = computed(() => activeWorldId.value === SIMULATED_WORLD_ID)
+const activeWorld = computed(
+  () => WORLDS.find((w) => w.id === activeWorldId.value) ?? WORLDS[0],
+)
+// The snapshot URL the simulated world is being read from, shown to the student
+// when it cannot be reached (see simulatorUnreachable below).
+const simulatedCaptureUrl = computed(
+  () => captureUrlForWorld(SIMULATED_WORLD_ID, HOSTS) ?? '',
+)
+
+// The most recent frame the emulator served, and whether the last attempt to
+// fetch one failed. Both are updated by onSimulatedFrame below — i.e. only when
+// the app was fetching a frame anyway (a capture_image, or either half of a
+// motion recipe's Before/After). THERE IS DELIBERATELY NO TIMER AND NO POLLING
+// LOOP here: an idle simulator has nothing new to show, and a poll would burn a
+// fetch and a render per tick to establish that. Please do not "fix" this into
+// one.
+const latestSimulatedFrame = ref<string | null>(null)
+const simulatorUnreachable = ref(false)
+
+// RC-44: built ONCE for the app's lifetime and shared by every session. The
+// HTTP snapshot source inside reads its URL through a getter on each capture,
+// so it always addresses the world selected *now* rather than the one selected
+// when it was constructed.
+const capabilities = createWorldCapabilities({
+  getWorldId: () => activeWorldId.value,
+  hosts: HOSTS,
+  getWebcamPanel: () => webcamPanelRef.value,
+  fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
+  onSimulatedFrame: (frame) => {
+    simulatorUnreachable.value = frame == null
+    if (frame != null) latestSimulatedFrame.value = frame
+  },
+})
+
+function makeSession(presetId: string, worldId: WorldId): RobotSession {
+  return createWorldSession({
+    worldId,
+    hosts: HOSTS,
     presetId,
     agUiUrl: typeof __AGUI_URL__ !== 'undefined' ? __AGUI_URL__ : '',
-    capabilities: {
-      isReady: () => webcamPanelRef.value != null,
-      captureFrame: () => webcamPanelRef.value?.captureFrame() ?? null,
-      composeBeforeAfter: (before, after) =>
-        webcamPanelRef.value?.composeBeforeAfter(before, after) ?? Promise.resolve(null),
-      fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
-    },
+    capabilities,
   })
 }
 
@@ -117,7 +172,7 @@ function makeSession(presetId: string): RobotSession {
 // the headless analogue of the bespoke path's `:key` remount of
 // <ChatInterface>. The provider/model label is preset-independent, so
 // re-fetch it after each re-init.
-const session = shallowRef(makeSession(activePresetId.value))
+const session = shallowRef(makeSession(activePresetId.value, activeWorldId.value))
 
 // PLAT-13: the AG-UI agent the CopilotKit provider manages ("self-managed
 // HttpAgent" — the same wire the bespoke chatService spoke: AG-UI over
@@ -134,10 +189,30 @@ function makeAgent(): HttpAgent {
 const agent = shallowRef(makeAgent())
 const selfManagedAgents = computed(() => ({ default: agent.value }))
 
-watch(activePresetId, (id) => {
-  session.value = makeSession(id)
+// RC-44: a world switch re-initialises exactly as a preset switch does, and
+// for the same reason — RobotSession.robotHost is readonly by design, so a new
+// host means a new session. The paired `:key` on <CopilotKitProvider> below
+// carries the world too, so the remount gives a fresh HttpAgent and an empty
+// message log: a conversation describing a world that no longer exists is
+// worse than a clean start.
+watch([activePresetId, activeWorldId], ([presetId, worldId]) => {
+  session.value = makeSession(presetId, worldId)
   agent.value = makeAgent()
   session.value.loadAgentInfo()
+})
+
+// Trap 1: <PkWebcamPanel> stays MOUNTED in every world — composeBeforeAfter
+// lives on it and draws on its hidden canvas, so the motion recipes need it
+// even when the frames come from the emulator. Only the camera stream is
+// stopped (and the panel hidden), never the component.
+watch(isSimulated, (simulated) => {
+  if (simulated) {
+    webcamPanelRef.value?.stopCamera()
+    simulatorUnreachable.value = false
+    latestSimulatedFrame.value = null
+  } else {
+    webcamPanelRef.value?.startCamera()
+  }
 })
 
 // EXT-6 Tool Belt "pulse briefly when their tool fires": `firingToolName` is
@@ -208,6 +283,7 @@ onMounted(() => {
       </template>
       <template #nav-controls>
         <PresetPicker :presets="presets" v-model="activePresetId" />
+        <WorldPicker :worlds="WORLDS" v-model="activeWorldId" />
         <span v-if="agentLabel" class="agent-label">Model: {{ agentLabel }}</span>
       </template>
     </PkNavHeader>
@@ -222,7 +298,57 @@ onMounted(() => {
         />
         <div class="cockpit-main">
           <section class="camera-viewport" aria-label="Camera Feed">
-            <PkWebcamPanel ref="webcamPanelRef" />
+            <!-- RC-44 trap 1: the webcam panel is NEVER unmounted. The motion
+                 recipes' Before/After composite is built by its
+                 composeBeforeAfter, which draws on the panel's hidden canvas
+                 rather than on the camera stream — so it works fine for
+                 simulated frames, but only while the component exists. A
+                 `v-if` here would null the ref and break every composite
+                 silently. Hidden with `v-show`, stream stopped by the watcher
+                 above. -->
+            <div v-show="!isSimulated" class="webcam-holder">
+              <PkWebcamPanel ref="webcamPanelRef" />
+            </div>
+
+            <!-- RC-44 trap 2: in the simulated world the student must never be
+                 shown the live webcam while the agent is looking at the
+                 emulator. This shows the most recent frame the emulator
+                 actually served, and a placeholder until one arrives. -->
+            <div v-if="isSimulated" class="simulated-view">
+              <img
+                v-if="latestSimulatedFrame"
+                class="simulated-frame"
+                :src="latestSimulatedFrame"
+                alt="Overhead view of the simulated world"
+              />
+              <p v-else-if="simulatorUnreachable" class="simulated-message simulated-message--error">
+                Could not reach the simulated world at {{ simulatedCaptureUrl }}. Start it with
+                <code>pnpm run emulator</code> — the camera is not the problem here.
+              </p>
+              <p v-else class="simulated-message">
+                No frame yet. The simulated world appears here as soon as the robot takes its
+                first picture or makes its first move.
+              </p>
+              <p
+                v-if="latestSimulatedFrame && simulatorUnreachable"
+                class="simulated-message simulated-message--error"
+              >
+                The last frame could not be fetched from {{ simulatedCaptureUrl }} — this view is
+                out of date. Is <code>pnpm run emulator</code> still running?
+              </p>
+              <p class="simulated-note">
+                This is a 3rd-person overhead view of the world. It is not what the robot's
+                onboard camera sees, so a prompt tuned here will not transfer unchanged to the
+                real robot.
+              </p>
+            </div>
+
+            <!-- The active world, stated where the student is looking rather
+                 than only inside the dropdown: a simulated run that looks
+                 identical to a real one is a trap. -->
+            <span class="world-badge" :class="{ 'world-badge--sim': isSimulated }">
+              {{ activeWorld.badge }}
+            </span>
           </section>
           <RobotsBrains
             :preset-name="activePreset.name"
@@ -249,7 +375,7 @@ onMounted(() => {
              Tutor pane a single chat column (the robot agent emits no A2UI
              surfaces; the default 'panel' target would reserve a split pane). -->
         <CopilotKitProvider
-          :key="activePresetId"
+          :key="`${activePresetId}:${activeWorldId}`"
           :self-managed-agents="selfManagedAgents"
           :frontend-tools="frontendTools"
         >
@@ -377,9 +503,92 @@ onMounted(() => {
 }
 
 .camera-viewport {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+}
+
+/* RC-44: the webcam panel's wrapper. `v-show` (display: none) rather than
+   `v-if` — the component stays mounted so composeBeforeAfter's canvas keeps
+   working; see the template comment. */
+.webcam-holder {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.simulated-view {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--padding-third);
+  padding: var(--padding-twothird);
+  overflow: hidden;
+  background: var(--rc-cockpit-bg);
+}
+
+.simulated-frame {
+  max-width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  object-fit: contain;
+  image-rendering: pixelated;
+  border-radius: var(--border-radius-small-box);
+}
+
+.simulated-message {
+  max-width: 42ch;
+  margin: 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--rc-cockpit-text-secondary);
+}
+
+.simulated-message--error {
+  color: var(--rc-warning);
+}
+
+.simulated-message code {
+  font-family: monospace;
+}
+
+.simulated-note {
+  flex: 0 0 auto;
+  max-width: 52ch;
+  margin: 0;
+  text-align: center;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--rc-cockpit-text-secondary);
+}
+
+/* The active world, always visible over the viewport. */
+.world-badge {
+  position: absolute;
+  top: var(--padding-third);
+  right: var(--padding-third);
+  z-index: 1;
+  padding: 0.15rem 0.6rem;
+  border-radius: 100px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rc-cockpit-text);
+  background: var(--rc-cockpit-surface);
+  border: 1px solid var(--rc-cockpit-border);
+}
+
+.world-badge--sim {
+  color: #13142a;
+  background: var(--rc-warning);
+  border-color: var(--rc-warning);
 }
 
 /* ── Tutor (right, light zone) ──────────────────────────────────────────── */
