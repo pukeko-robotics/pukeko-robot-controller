@@ -18,7 +18,16 @@ export interface RobotCapabilities {
   // Whether the webcam panel is mounted/usable yet. Guards the pre-motion
   // "Webcam not initialized" case exactly as the old runMotion did.
   isReady(): boolean;
-  captureFrame(): string | null;
+  // May be synchronous (the mounted <PkWebcamPanel>, which draws off a canvas
+  // it already has) or asynchronous (an HTTP-backed source, which must fetch
+  // the frame). This mirrors vue-ui's own ImageCaptureSource, which allows
+  // exactly this union — and `runRecipe` MUST await it. A synchronous-only
+  // signature here fails asymmetrically and silently for an async source:
+  // capture_image goes through vue-ui's captureImageResult, which awaits, so
+  // it works; the motion recipes would store the un-awaited Promise, which is
+  // truthy, so the null guard passes and a Promise reaches composeBeforeAfter
+  // dressed as a `data:` URL. Nothing throws and the composite is simply wrong.
+  captureFrame(): string | null | Promise<string | null>;
   composeBeforeAfter(before: string, after: string): Promise<string | null>;
   fetch: typeof fetch;
   robotUrl(path: string): string;
@@ -91,7 +100,8 @@ export async function runRecipe(
     const step: RecipeStep = raw;
     switch (step.step) {
       case 'captureFrame': {
-        const frame = caps.captureFrame();
+        // `await` is load-bearing, not cosmetic: see RobotCapabilities above.
+        const frame = await caps.captureFrame();
         if (!frame) {
           return JSON.stringify({ error: step.failMessage, motion });
         }

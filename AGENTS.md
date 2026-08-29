@@ -20,6 +20,12 @@ pnpm run dev:ag-ui
 
 Real robot: skip `pnpm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT_HOST=192.168.4.1` (default) or whatever IP it picks up.
 
+## Choosing a world
+
+The nav header's **World** picker chooses what the student is actually driving: the real robot, or the grid-world emulator. It is a robot-*target* choice, not a camera one — the motion endpoints and the frames both follow it, because a simulated world only advances when `/forward` and friends reach the emulator. Switching re-instantiates the `RobotSession` (its `robotHost` is readonly) and remounts the chat with a clean message log, exactly as a preset switch does.
+
+The browser reaches each world at a build-time host: `VITE_ROBOT_HOST` (default `192.168.4.1`) for the real robot, `VITE_ROBOT_EMULATOR_HOST` (default `localhost:8081`, matching `ROBOT_EMULATOR_PORT`'s default) for the emulator. In the simulated world the Cockpit shows the last frame the emulator served — refreshed whenever the app fetched one anyway, never on a timer — and never the live webcam. The `<PkWebcamPanel>` stays mounted with its stream stopped: the motion recipes' Before/After composite is drawn on that component's hidden canvas.
+
 ## The two fake robots
 
 - **`robot-stub/`** — a **protocol** stub. It echoes each command back and returns a jittered fake `/distance`; it has no idea where the robot is. Its predictability is the point: the browser e2e boots it. Keep it this dumb.
