@@ -1,6 +1,13 @@
 <script lang="ts">
 import { DEFAULT_ROBOT_PRESET_ID } from './agent/robotPresets/index.js'
 import { registerRobotToolDisplays } from './toolDisplays/index.js'
+import {
+  createWorldSession,
+  type BrowserCapabilities,
+  type RobotSession,
+  type WorldHosts,
+  type WorldId,
+} from './robotSession/index.js'
 
 // RC-14: register the robot's bespoke tool-result renderers (capture_image
 // thumbnail + motion Before/After diff) on vue-ui's PLAT-17 registry at app
@@ -19,6 +26,32 @@ registerRobotToolDisplays()
 // convention below for a blank-but-present var.
 export function resolveSeedPreset(raw: string | undefined): string {
   return raw && raw.length > 0 ? raw : DEFAULT_ROBOT_PRESET_ID
+}
+
+export interface MakeSessionOptions {
+  worldId: WorldId
+  presetId: string
+  hosts: WorldHosts
+  capabilities: BrowserCapabilities
+  agUiUrl?: string
+}
+
+// RC-44: the app's one piece of session wiring, in the module block for the
+// same reason resolveSeedPreset is — so it is unit-testable without mounting
+// the app. It is only pass-through, which is exactly why it needs a test: the
+// world layer beneath it is covered thoroughly, but a single wrong identifier
+// HERE — a hardcoded world, the wrong host set — builds every session for the
+// real robot however the picker is set, and looks entirely right while doing
+// nothing. That is the failure this whole node exists to prevent, so the seam
+// that could still commit it is asserted directly rather than trusted.
+export function makeSession(options: MakeSessionOptions): RobotSession {
+  return createWorldSession({
+    worldId: options.worldId,
+    hosts: options.hosts,
+    presetId: options.presetId,
+    capabilities: options.capabilities,
+    agUiUrl: options.agUiUrl,
+  })
 }
 </script>
 
@@ -45,15 +78,12 @@ import { getRobotPreset, listPresets } from './agent/robotPresets/index.js'
 import {
   captureUrlForWorld,
   createWorldCapabilities,
-  createWorldSession,
   DEFAULT_EMULATOR_HOST,
   DEFAULT_ROBOT_HOST,
   REAL_ROBOT_WORLD_ID,
   resolveHost,
   SIMULATED_WORLD_ID,
   WORLDS,
-  type RobotSession,
-  type WorldId,
 } from './robotSession/index.js'
 import PresetPicker from './components/PresetPicker.vue'
 import WorldPicker from './components/WorldPicker.vue'
@@ -79,7 +109,7 @@ const splitPercent = ref(57)
 // RC-44: one host per world. The emulator's is configurable the same way the
 // robot's is — a build-time VITE_ var, defaulted to where `pnpm run emulator`
 // listens (ROBOT_EMULATOR_PORT's own default). See robotSession/worlds.ts.
-const HOSTS = {
+const HOSTS: WorldHosts = {
   robotHost: resolveHost(import.meta.env.VITE_ROBOT_HOST, DEFAULT_ROBOT_HOST),
   emulatorHost: resolveHost(import.meta.env.VITE_ROBOT_EMULATOR_HOST, DEFAULT_EMULATOR_HOST),
 }
@@ -153,13 +183,16 @@ const capabilities = createWorldCapabilities({
   },
 })
 
-function makeSession(presetId: string, worldId: WorldId): RobotSession {
-  return createWorldSession({
+// makeSession lives in the module <script> block above so it can be unit-tested
+// without mounting the app; this is the only place that supplies it the app's
+// live values.
+function sessionFor(presetId: string, worldId: WorldId): RobotSession {
+  return makeSession({
     worldId,
-    hosts: HOSTS,
     presetId,
-    agUiUrl: typeof __AGUI_URL__ !== 'undefined' ? __AGUI_URL__ : '',
+    hosts: HOSTS,
     capabilities,
+    agUiUrl: typeof __AGUI_URL__ !== 'undefined' ? __AGUI_URL__ : '',
   })
 }
 
@@ -172,7 +205,7 @@ function makeSession(presetId: string, worldId: WorldId): RobotSession {
 // the headless analogue of the bespoke path's `:key` remount of
 // <ChatInterface>. The provider/model label is preset-independent, so
 // re-fetch it after each re-init.
-const session = shallowRef(makeSession(activePresetId.value, activeWorldId.value))
+const session = shallowRef(sessionFor(activePresetId.value, activeWorldId.value))
 
 // PLAT-13: the AG-UI agent the CopilotKit provider manages ("self-managed
 // HttpAgent" — the same wire the bespoke chatService spoke: AG-UI over
@@ -196,7 +229,7 @@ const selfManagedAgents = computed(() => ({ default: agent.value }))
 // message log: a conversation describing a world that no longer exists is
 // worse than a clean start.
 watch([activePresetId, activeWorldId], ([presetId, worldId]) => {
-  session.value = makeSession(presetId, worldId)
+  session.value = sessionFor(presetId, worldId)
   agent.value = makeAgent()
   session.value.loadAgentInfo()
 })

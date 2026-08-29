@@ -13,6 +13,7 @@ import {
   type WorldId,
 } from '../src/robotSession/index.js'
 import { ACEBOTT_QD021_PRESET } from '../src/agent/robotPresets/index.js'
+import { makeSession } from '../src/App.vue'
 import WorldPicker from '../src/components/WorldPicker.vue'
 
 // RC-44 acceptance. The choice of world is a robot-TARGET choice: the emulated
@@ -290,6 +291,114 @@ describe('RC-44 selecting a world repoints the CAPTURE source', () => {
       'data:image/jpeg;base64,SIMAFTER'
     )
     expect(composite).toBe('data:image/jpeg;base64,COMPOSITEBYTES')
+  })
+})
+
+// --- the App.vue wiring seam ----------------------------------------------
+
+describe('RC-44 App.vue makeSession passes the selection through', () => {
+  // The world layer below this is covered thoroughly; these six lines of
+  // pass-through were not. A single wrong identifier here — a hardcoded world
+  // id, the wrong host set — would build every session for the real robot
+  // however the picker is set, and leave the whole suite green. So each field
+  // is asserted where it lands, against hand-written literals.
+
+  function fixture(worldId: WorldId) {
+    const panel = makePanel()
+    const { fn, calls } = makeFetch()
+    const capabilities = createWorldCapabilities({
+      getWorldId: () => worldId,
+      hosts: HOSTS,
+      getWebcamPanel: () => panel,
+      fetch: fn,
+    })
+    return { calls, capabilities, panel }
+  }
+
+  it('builds a simulated session against the emulator host', () => {
+    const { capabilities } = fixture('simulated')
+
+    const session = makeSession({
+      worldId: 'simulated',
+      presetId: ACEBOTT_QD021_PRESET.id,
+      hosts: HOSTS,
+      capabilities,
+    })
+
+    expect(session.robotHost).toBe('127.0.0.1:9099')
+    expect(session.robotUrl('/forward')).toBe('http://127.0.0.1:9099/forward')
+  })
+
+  it('builds a real-robot session against the robot host', () => {
+    const { capabilities } = fixture('real')
+
+    const session = makeSession({
+      worldId: 'real',
+      presetId: ACEBOTT_QD021_PRESET.id,
+      hosts: HOSTS,
+      capabilities,
+    })
+
+    expect(session.robotHost).toBe('10.0.0.7')
+    expect(session.robotUrl('/forward')).toBe('http://10.0.0.7/forward')
+  })
+
+  it('drives the emulator end to end for a simulated selection', async () => {
+    // The pass-through proved on the wire rather than on a property: the
+    // capabilities and the world both have to arrive for these URLs to appear.
+    const { capabilities, calls } = fixture('simulated')
+
+    const session = makeSession({
+      worldId: 'simulated',
+      presetId: ACEBOTT_QD021_PRESET.id,
+      hosts: HOSTS,
+      capabilities,
+    })
+    await session.runMotion(MOVE_FORWARD, { steps: 2 })
+
+    expect(calls).toEqual([
+      'http://127.0.0.1:9099/capture',
+      'http://127.0.0.1:9099/forward?steps=2',
+      'http://127.0.0.1:9099/stop',
+      'http://127.0.0.1:9099/capture',
+    ])
+  })
+
+  it('passes the preset id through to the session tool list', () => {
+    const { capabilities } = fixture('real')
+
+    const session = makeSession({
+      worldId: 'real',
+      presetId: ACEBOTT_QD021_PRESET.id,
+      hosts: HOSTS,
+      capabilities,
+    })
+
+    expect(session.presetId).toBe('ACEBOTT-QD021')
+    expect(session.clientTools.map((t) => t.name)).toEqual([
+      'capture_image',
+      'move_forward',
+      'move_backward',
+      'turn_left',
+      'turn_right',
+    ])
+  })
+
+  it('passes the AG-UI url through, so the agent label is fetched from it', async () => {
+    const { capabilities, calls } = fixture('real')
+
+    const session = makeSession({
+      worldId: 'real',
+      presetId: ACEBOTT_QD021_PRESET.id,
+      hosts: HOSTS,
+      capabilities,
+      agUiUrl: 'http://agui.example:4321/agents/default/run',
+    })
+    await session.loadAgentInfo()
+
+    // /info is derived from the url that was handed in; a dropped agUiUrl would
+    // instead fall back to fetching '/config.json'.
+    expect(calls).toEqual(['http://agui.example:4321/info'])
   })
 })
 
