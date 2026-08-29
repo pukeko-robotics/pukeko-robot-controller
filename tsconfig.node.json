@@ -4,7 +4,9 @@
     "vite.config.*",
     "vitest.config.*",
     "server/**/*",
-    "robot-stub/**/*"
+    "robot-stub/**/*",
+    "robot-protocol/**/*",
+    "robot-emulator/**/*"
   ],
   "compilerOptions": {
     "noEmit": true,

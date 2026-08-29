@@ -1,30 +1,30 @@
 import express, { type Express, type Request, type Response } from 'express'
+import {
+  MAX_STEPS,
+  MOVEMENT_ENDPOINTS,
+  TRICK_ENDPOINTS,
+  clampSteps,
+  corsMiddleware,
+} from '../robot-protocol/robotProtocol.js'
 
 /**
  * Test stub matching the agent build of for-agents/Biped_Robot_Web.py.
  * Endpoints are named after the action they perform; movement endpoints
  * accept an optional ?steps=N (default 1, capped at 10).
+ *
+ * This is a PROTOCOL stub and nothing more: it echoes each command back and returns a jittered
+ * fake distance, with no notion of where the robot is. Its predictability is the point — the
+ * browser e2e boots it — so keep it this dumb. The grid-world emulator that does model position,
+ * heading and terrain lives in robot-emulator/ and speaks the same protocol from the shared
+ * module below.
  */
-export const MAX_STEPS = 10
-
-export const MOVEMENT_ENDPOINTS = ['/forward', '/backward', '/turn_left', '/turn_right'] as const
-export type MovementPath = (typeof MOVEMENT_ENDPOINTS)[number]
-
-export const TRICK_ENDPOINTS = [
-  '/sprint',
-  '/dance',
-  '/avoid',
-  '/follow',
-  '/kick_left',
-  '/kick_right',
-  '/tilt_left',
-  '/tilt_right',
-  '/stamp_left',
-  '/stamp_right',
-  '/ankles_left',
-  '/ankles_right',
-] as const
-export type TrickPath = (typeof TRICK_ENDPOINTS)[number]
+export {
+  MAX_STEPS,
+  MOVEMENT_ENDPOINTS,
+  TRICK_ENDPOINTS,
+  type MovementPath,
+  type TrickPath,
+} from '../robot-protocol/robotProtocol.js'
 
 export interface RobotState {
   lastCommand: string | null
@@ -48,13 +48,6 @@ export function createRobotState(): RobotState {
   }
 }
 
-function clampSteps(raw: unknown): number {
-  if (typeof raw !== 'string') return 1
-  const n = parseInt(raw, 10)
-  if (isNaN(n) || n < 1) return 1
-  return Math.min(n, MAX_STEPS)
-}
-
 function recordCommand(state: RobotState, name: string, steps: number) {
   state.lastCommand = name
   state.lastSteps = steps
@@ -66,18 +59,7 @@ export function createRobotStubApp(state?: RobotState): { app: Express; state: R
   const robotState = state ?? createRobotState()
   const app = express()
 
-  // CORS so the browser-side motion tool handler can call /distance, /forward,
-  // etc. directly. The real robot firmware (Biped_Robot_Web.py) does the same.
-  app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-    if (req.method === 'OPTIONS') {
-      res.status(204).end()
-      return
-    }
-    next()
-  })
+  app.use(corsMiddleware)
 
   app.get('/', (_req, res) => {
     res.type('text/plain').send('Acebott biped robot - agent API.\n')

@@ -13,6 +13,7 @@
     "dev:ag-ui": "node --env-file-if-exists=.env node_modules/vite/bin/vite.js",
     "server": "node --env-file-if-exists=.env --import=tsx ./server/index.ts",
     "stub": "node --env-file-if-exists=.env --import=tsx robot-stub/index.ts",
+    "emulator": "node --env-file-if-exists=.env --import=tsx robot-emulator/index.ts",
     "start": "concurrently -n server,client -c blue,green --kill-others-on-fail \"pnpm:server\" \"pnpm:dev\"",
     "test": "node scripts/check-no-bare-launchers.mjs && vitest run",
     "e2e": "node it-robot.js",
@@ -34,6 +35,7 @@
     "@langchain/openrouter": "^0.3.0",
     "chart.js": "^4.5.1",
     "express": "^5.2.1",
+    "jpeg-js": "0.4.4",
     "langchain": "^1.4.5",
     "vue": "^3.5.13",
     "zod": "^3.25.76"
