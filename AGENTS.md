@@ -8,6 +8,9 @@ A Vue web UI + AG-UI backend that lets an LLM drive an Acebott biped robot in fr
 # robot stub (port 8080)
 pnpm run stub
 
+# grid-world emulator, an alternative to the stub (ROBOT_EMULATOR_PORT, default 8081)
+pnpm run emulator
+
 # AG-UI backend (port 3000)
 ROBOT_HOST=localhost:8080 pnpm run server
 
@@ -16,6 +19,12 @@ pnpm run dev:ag-ui
 ```
 
 Real robot: skip `pnpm run stub` and connect to the robot's Wi-Fi AP. Set `ROBOT_HOST=192.168.4.1` (default) or whatever IP it picks up.
+
+## The two fake robots
+
+- **`robot-stub/`** — a **protocol** stub. It echoes each command back and returns a jittered fake `/distance`; it has no idea where the robot is. Its predictability is the point: the browser e2e boots it. Keep it this dumb.
+- **`robot-emulator/`** — an **emulator**. Same endpoints, same steps clamping, same CORS, but backed by a real `(x, y, heading)` on a grid world (`world.ts`, pure and map-driven), with `/distance` measured rather than faked and a `GET /capture` that renders the world as a real JPEG (`render.ts`). Movement is applied one cell at a time, so a multi-step move stops **at** a wall and dies **on** the abyss cell it reaches. Death ends the run through the observation only — no hidden field yanks the control loop; the model reads that the robot is destroyed and calls its completion tool to declare failure. The camera view is 3rd-person overhead, which is **not** what the robot's onboard camera sees — see the trade-off recorded in `render.ts`.
+- **`robot-protocol/`** — what the two share: the endpoint lists, `MAX_STEPS`, the steps clamp and the CORS middleware. They live here rather than in either server because two copies drift, and an emulator that has quietly stopped matching the firmware still looks correct in isolation.
 
 ## Architecture
 
