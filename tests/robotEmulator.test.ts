@@ -59,6 +59,28 @@ beforeEach(async () => {
 })
 
 describe('protocol compatibility with the firmware', () => {
+  it('speaks the firmware endpoint set, written out', () => {
+    // The two lists below drive the loops in this block, and they come from the module under
+    // test — so an emptied or shortened list would make those loops iterate zero times and the
+    // tests pass by checking nothing. Writing the endpoints out also states the protocol this
+    // emulator claims to speak, which is the thing that must not drift from the firmware.
+    expect([...MOVEMENT_ENDPOINTS]).toEqual(['/forward', '/backward', '/turn_left', '/turn_right'])
+    expect([...TRICK_ENDPOINTS]).toEqual([
+      '/sprint',
+      '/dance',
+      '/avoid',
+      '/follow',
+      '/kick_left',
+      '/kick_right',
+      '/tilt_left',
+      '/tilt_right',
+      '/stamp_left',
+      '/stamp_right',
+      '/ankles_left',
+      '/ankles_right',
+    ])
+  })
+
   it('answers every movement endpoint with the firmware fields plus the spatial ones', async () => {
     for (const path of MOVEMENT_ENDPOINTS) {
       await fetch(`${baseUrl}/reset`, { method: 'POST' })
@@ -74,7 +96,9 @@ describe('protocol compatibility with the firmware', () => {
   })
 
   it('clamps steps exactly as the firmware does', async () => {
-    expect((await (await fetch(`${baseUrl}/turn_right?steps=999`)).json()).steps).toBe(MAX_STEPS)
+    // 10 written out: MAX_STEPS is the constant under test, and the firmware's cap is 10.
+    expect((await (await fetch(`${baseUrl}/turn_right?steps=999`)).json()).steps).toBe(10)
+    expect(MAX_STEPS).toBe(10)
     expect((await (await fetch(`${baseUrl}/turn_right?steps=0`)).json()).steps).toBe(1)
     expect((await (await fetch(`${baseUrl}/turn_right?steps=abc`)).json()).steps).toBe(1)
     expect((await (await fetch(`${baseUrl}/turn_right`)).json()).steps).toBe(1)
@@ -159,6 +183,19 @@ describe('/distance over HTTP', () => {
     expect(await res.text()).toMatch(/^\d+\.\d$/)
   })
 
+  it('serves the stub centimetre scale on the wire, in absolute numbers', async () => {
+    // The exact bytes, not a multiple of a constant imported from the code being tested. This is
+    // what pins the emulator to the scale the ultrasonic tool was calibrated against: one clear
+    // cell is 25.0, and a wall in the robot's face is the firmware's 2.0 floor.
+    expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('25.0')
+
+    await fetch(`${baseUrl}/turn_left?steps=1`) // facing north, straight at the edge
+    expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('2.0')
+
+    await fetch(`${baseUrl}/turn_left?steps=2`) // facing south, two clear cells then the edge
+    expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('50.0')
+  })
+
   it('agrees with the world in front of the robot', async () => {
     // Facing east from 0,0: one clear cell (1,0) and then the wall at 2,0.
     expect(parseFloat(await (await fetch(`${baseUrl}/distance`)).text())).toBe(CM_PER_CELL)
@@ -175,7 +212,7 @@ describe('/distance over HTTP', () => {
   it('records the reading on /status', async () => {
     await fetch(`${baseUrl}/distance`)
     const status = await (await fetch(`${baseUrl}/status`)).json()
-    expect(status.lastDistanceCm).toBe(CM_PER_CELL)
+    expect(status.lastDistanceCm).toBe(25)
   })
 })
 
@@ -222,6 +259,15 @@ describe('/capture', () => {
 
   it('serves a decodable JPEG sized to the world', async () => {
     const image = await capture()
+
+    // Absolute pixels: the spec map is 6 cells across and 3 down, drawn at 32 px per cell.
+    // Expressed as `rows.length * CELL_PX` this would hold for any cell size, so the rendered
+    // scale would have no coverage at all.
+    expect(image.width).toBe(192)
+    expect(image.height).toBe(96)
+    expect(CELL_PX).toBe(32)
+
+    // ...and the relationship, which is the property that must survive a change of map.
     expect(image.width).toBe(TEST_MAP.rows[0].length * CELL_PX)
     expect(image.height).toBe(TEST_MAP.rows.length * CELL_PX)
   })
@@ -241,12 +287,20 @@ describe('/capture', () => {
     expectColourAt(image, 0, 2, [220, 32, 32, 255]) // red target
   })
 
-  it('keeps the palette entries the drawing code uses distinguishable from one another', () => {
-    // The companion to the literals above: those pin what is drawn, this pins that no two cell
-    // kinds share a colour, which is the property an agent reading the image depends on.
-    const terrain = ['floor', 'hard', 'soft', 'abyss', 'targetRed', 'targetGreen'] as const
-    const seen = new Set(terrain.map((kind) => PALETTE[kind].slice(0, 3).join(',')))
-    expect(seen.size).toBe(terrain.length)
+  it('keeps every drawn marker distinguishable from every other', () => {
+    // The companion to the literals above: those pin what is drawn, this pins that no two things
+    // an agent has to tell apart share a colour.
+    //
+    // `robot` belongs in this list and its absence was a real hole: the robot marker could be
+    // recoloured to the soft obstacle's exact grey and the whole suite stayed green, so the one
+    // test asserting that things are distinguishable exempted the most important distinction of
+    // all — the robot from the terrain it is standing on.
+    //
+    // `heading` is deliberately NOT here: the heading triangle is white, the same white as the
+    // floor, and that is correct because it is only ever drawn on top of the black robot body.
+    const drawn = ['floor', 'hard', 'soft', 'abyss', 'targetRed', 'targetGreen', 'robot'] as const
+    const seen = new Set(drawn.map((kind) => PALETTE[kind].slice(0, 3).join(',')))
+    expect(seen.size).toBe(drawn.length)
   })
 
   it('draws the robot on its own cell and moves the marker when the robot moves', async () => {
@@ -255,15 +309,20 @@ describe('/capture', () => {
     // and an empty floor cell, which is exactly the confusion this test exists to rule out.
     const behind = { fx: 0.2, fy: 0.5 }
 
+    // Written out, not read back from PALETTE. With the expected values taken from the module
+    // under test this test passed even when the robot was recoloured to the soft obstacle's grey.
+    const robotBlack = [0, 0, 0, 255] as const
+    const floorWhite = [255, 255, 255, 255] as const
+
     const before = await capture()
-    expectColourAt(before, 0, 0, PALETTE.robot, behind)
-    expectColourAt(before, 1, 0, PALETTE.floor, behind)
+    expectColourAt(before, 0, 0, robotBlack, behind)
+    expectColourAt(before, 1, 0, floorWhite, behind)
 
     await fetch(`${baseUrl}/forward?steps=1`)
 
     const after = await capture()
-    expectColourAt(after, 1, 0, PALETTE.robot, behind)
-    expectColourAt(after, 0, 0, PALETTE.floor, behind)
+    expectColourAt(after, 1, 0, robotBlack, behind)
+    expectColourAt(after, 0, 0, floorWhite, behind)
   })
 
   it('shows an unambiguous heading indicator that rotates with the robot', async () => {

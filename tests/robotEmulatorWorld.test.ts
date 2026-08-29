@@ -42,6 +42,10 @@ describe('heading arithmetic', () => {
   })
 
   it('is the identity after four quarter-turns in either direction, from any start', () => {
+    // Pin the loop's driver first. HEADINGS comes from the module under test, so an empty or
+    // shortened list would make every assertion below run zero times and pass by scanning nothing.
+    expect([...HEADINGS]).toEqual(['north', 'east', 'south', 'west'])
+
     for (const heading of HEADINGS) {
       expect(rotate(heading, 4)).toBe(heading)
       expect(rotate(heading, -4)).toBe(heading)
@@ -177,6 +181,35 @@ describe('soft obstacles', () => {
 })
 
 describe('/distance in world terms', () => {
+  /**
+   * THE SCALE ITSELF, IN ABSOLUTE CENTIMETRES.
+   *
+   * Every other assertion in this block is written as a multiple of `CM_PER_CELL`, which pins the
+   * ratio between readings and nothing else: those constants could be any number at all and the
+   * arithmetic would still agree with itself. The brief's actual requirement is that the reading
+   * is "converted to the same centimetre-ish scale the stub currently fakes, so the ultrasonic
+   * tool keeps meaning what it meant" — a statement about specific numbers, which can only be
+   * tested against numbers written out independently of the module under test.
+   */
+  it('reports the stub centimetre scale in absolute numbers', () => {
+    // One clear cell ahead reads 25.0 — the nominal value the stub's fake reading centred on.
+    const oneClear = createWorld(corridor(['..#...']))
+    expect(distanceCm(oneClear, initialState(oneClear))).toBe(25)
+
+    // Two clear cells, so twice that.
+    const twoClear = createWorld(corridor(['...#..']))
+    expect(distanceCm(twoClear, initialState(twoClear))).toBe(50)
+
+    // A blocking cell immediately ahead reads 2.0 — the firmware's own floor, which the stub
+    // reproduces as Math.max(2, ...).
+    const blocked = createWorld(corridor(['.#....']))
+    expect(distanceCm(blocked, initialState(blocked))).toBe(2)
+
+    // Open ground reads the 8-cell scan cap, 200 cm, and never more.
+    const open = createWorld(corridor(['.'.repeat(30)]))
+    expect(distanceCm(open, initialState(open))).toBe(200)
+  })
+
   it('counts the clear cells ahead up to the first blocking cell', () => {
     const world = createWorld(corridor(['...#..']))
     expect(distanceCm(world, initialState(world))).toBe(2 * CM_PER_CELL)
@@ -220,7 +253,10 @@ describe('/distance in world terms', () => {
 
   it('caps the reportable range rather than scanning the whole world', () => {
     const world = createWorld(corridor(['.'.repeat(30)]))
-    expect(distanceCm(world, initialState(world))).toBe(MAX_SCAN_CELLS * CM_PER_CELL)
+    // 200 cm written out, not MAX_SCAN_CELLS * CM_PER_CELL: both of those come from the module
+    // under test, so that form would hold for any pair of values.
+    expect(distanceCm(world, initialState(world))).toBe(200)
+    expect(MAX_SCAN_CELLS).toBe(8)
   })
 })
 
@@ -228,7 +264,7 @@ describe('maps are data', () => {
   it('parses the shipped phase-one map and starts the robot on a drivable cell', () => {
     const world = createWorld(PHASE_ONE_MAP)
     expect(world.width).toBe(12)
-    expect(world.height).toBe(PHASE_ONE_MAP.rows.length)
+    expect(world.height).toBe(9)
     expect(world.cells[world.start.y][world.start.x]).toBe('floor')
     expect(world.cells.flat()).toContain('abyss')
     expect(world.cells.flat()).toContain('targetRed')
@@ -236,7 +272,8 @@ describe('maps are data', () => {
   })
 
   it('defaults to the shipped map', () => {
-    expect(createWorld().id).toBe(PHASE_ONE_MAP.id)
+    expect(createWorld().id).toBe('phase-one-arena')
+    expect(PHASE_ONE_MAP.id).toBe('phase-one-arena')
   })
 
   it('refuses a ragged map rather than shifting every coordinate below the short row', () => {
