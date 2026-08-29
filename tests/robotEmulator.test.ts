@@ -10,24 +10,34 @@ import {
   MOVEMENT_ENDPOINTS,
   TRICK_ENDPOINTS,
 } from '../robot-protocol/robotProtocol.js'
-import { CELL_PX, PALETTE } from '../robot-emulator/render.js'
-import { CM_PER_CELL, MIN_DISTANCE_CM, type WorldMap } from '../robot-emulator/world.js'
+import { CELL_PX, PALETTE, renderRaster } from '../robot-emulator/render.js'
+import {
+  CM_PER_CELL,
+  MIN_DISTANCE_CM,
+  createWorld,
+  type WorldMap,
+} from '../robot-emulator/world.js'
 
 /**
  * A small, fully-known map. Every assertion below is written against these coordinates rather
  * than against the shipped arena, so a later edit to the shipped map cannot quietly make these
  * pass or fail for reasons unrelated to the behaviour under test.
  *
- *      x: 0    1    2    3    4    5
- *  y=0    .    .    #    .    .    .
- *  y=1    .    s    .    ~    .    g
- *  y=2    r    .    .    .    .    .
+ *      x: 0    1    2    3    4    5    6    7
+ *  y=0    .    .    .    .    .    .    .    .
+ *  y=1    .    .    .    #    .    .    .    .
+ *  y=2    .    .    .    .    .    .    .    .
+ *  y=3    .    .    s    .    .    ~    .    .
+ *  y=4    .    .    .    .    .    .    .    .
+ *  y=5    r    .    .    .    .    .    .    g
  *
- * The robot starts at 0,0 facing east.
+ * The robot is TWO CELLS SQUARE, anchored at its top-left cell. It starts anchored at 0,0 facing
+ * east, so its body covers 0,0 · 1,0 · 0,1 · 1,1 and the wall at 3,1 is the first thing in its
+ * way — under the body's lower-front corner, not under the cell the anchor would land on.
  */
 const TEST_MAP: WorldMap = {
   id: 'emulator-spec-map',
-  rows: ['..#...', '.s.~.g', 'r.....'],
+  rows: ['........', '...#....', '........', '..s..~..', '........', 'r......g'],
   start: { x: 0, y: 0, heading: 'east' },
 }
 
@@ -131,42 +141,90 @@ describe('protocol compatibility with the firmware', () => {
 })
 
 describe('movement over HTTP', () => {
-  it('stops at the hard obstacle rather than passing through it', async () => {
-    // Facing east from 0,0 the wall is at 2,0. Five steps must land on 1,0.
+  it('stops when ONE corner of the body meets the wall, not when the anchor does', async () => {
+    // Facing east from 0,0 the second step would anchor at 2,0 — plain floor — while putting the
+    // body's lower-front corner into the wall at 3,1. So the move ends anchored at 1,0. A
+    // single-cell robot would have walked on to 2,0 and reported a clean two-step move.
     const body = await (await fetch(`${baseUrl}/forward?steps=5`)).json()
     expect(body).toMatchObject({ x: 1, y: 0, stepsTaken: 1, blockedSteps: 4, outcome: 'blocked' })
     expect(body.destroyed).toBe(false)
+    expect(body.detail).toContain('3,1')
   })
 
-  it('dies on the abyss cell the path reaches, and stays dead', async () => {
-    await fetch(`${baseUrl}/turn_right?steps=1`) // now facing south
-    await fetch(`${baseUrl}/forward?steps=1`) // 0,1
-    await fetch(`${baseUrl}/turn_left?steps=1`) // facing east again
-    const fatal = await (await fetch(`${baseUrl}/forward?steps=5`)).json()
+  it('turns in 45-degree steps, so a right angle costs two of them', async () => {
+    const one = await (await fetch(`${baseUrl}/turn_right?steps=1`)).json()
+    expect(one.heading).toBe('southeast')
+    expect(one.detail).toContain('45 degrees')
+    expect(one.detail).not.toMatch(/quarter/i)
 
-    // 1,1 is the soft obstacle, so this move stops there — not in the abyss yet.
-    expect(fatal).toMatchObject({ x: 1, y: 1, outcome: 'partial', destroyed: false })
+    const two = await (await fetch(`${baseUrl}/turn_right?steps=1`)).json()
+    expect(two.heading).toBe('south')
 
-    const onwards = await (await fetch(`${baseUrl}/forward?steps=4`)).json()
-    expect(onwards).toMatchObject({ x: 3, y: 1, outcome: 'destroyed', destroyed: true, runOver: true })
-    expect(onwards.stepsTaken).toBe(2)
+    const back = await (await fetch(`${baseUrl}/turn_left?steps=2`)).json()
+    expect(back.heading).toBe('east')
+
+    // Eight steps is a full circle, so the robot ends up exactly where it started.
+    const circle = await (await fetch(`${baseUrl}/turn_right?steps=8`)).json()
+    expect(circle.heading).toBe('east')
+  })
+
+  it('walks the diagonals like a king, one cell on both axes per step', async () => {
+    await fetch(`${baseUrl}/turn_right?steps=1`) // east -> southeast
+    const downRight = await (await fetch(`${baseUrl}/forward?steps=1`)).json()
+    expect(downRight).toMatchObject({ x: 1, y: 1, stepsTaken: 1, outcome: 'moved' })
+
+    await fetch(`${baseUrl}/turn_right?steps=2`) // southeast -> southwest
+    const downLeft = await (await fetch(`${baseUrl}/forward?steps=1`)).json()
+    expect(downLeft).toMatchObject({ x: 0, y: 2, stepsTaken: 1, outcome: 'moved' })
+
+    // Backward on a diagonal reverses it exactly, both axes at once.
+    const back = await (await fetch(`${baseUrl}/backward?steps=1`)).json()
+    expect(back).toMatchObject({ x: 1, y: 1, stepsTaken: 1, outcome: 'moved' })
+  })
+
+  it('snags on the soft cell under one corner, then dies on the abyss under another', async () => {
+    await fetch(`${baseUrl}/turn_right?steps=2`) // facing south
+    const down = await (await fetch(`${baseUrl}/forward?steps=2`)).json()
+    expect(down).toMatchObject({ x: 0, y: 2, outcome: 'moved' })
+
+    await fetch(`${baseUrl}/turn_left?steps=2`) // facing east again
+
+    // The soft cell is at 2,3 — under the body's lower-front corner when the anchor is at 1,2.
+    const snagged = await (await fetch(`${baseUrl}/forward?steps=5`)).json()
+    expect(snagged).toMatchObject({ x: 1, y: 2, outcome: 'partial', destroyed: false })
+    expect(snagged.stepsTaken).toBe(1)
+
+    // Two cells wide, so it is still on that soft cell one step later.
+    const stillSnagged = await (await fetch(`${baseUrl}/forward?steps=1`)).json()
+    expect(stillSnagged).toMatchObject({ x: 2, y: 2, outcome: 'partial' })
+
+    const clear = await (await fetch(`${baseUrl}/forward?steps=1`)).json()
+    expect(clear).toMatchObject({ x: 3, y: 2, outcome: 'moved' })
+
+    // The abyss at 5,3 catches the body's lower-front corner when the anchor reaches 4,2.
+    const fatal = await (await fetch(`${baseUrl}/forward?steps=3`)).json()
+    expect(fatal).toMatchObject({ x: 4, y: 2, outcome: 'destroyed', destroyed: true, runOver: true })
+    expect(fatal.stepsTaken).toBe(1)
+    expect(fatal.detail).toContain('5,3')
 
     const after = await (await fetch(`${baseUrl}/forward?steps=2`)).json()
-    expect(after).toMatchObject({ x: 3, y: 1, stepsTaken: 0, outcome: 'run_over', runOver: true })
+    expect(after).toMatchObject({ x: 4, y: 2, stepsTaken: 0, outcome: 'run_over', runOver: true })
 
     const trick = await (await fetch(`${baseUrl}/dance`)).json()
     expect(trick).toMatchObject({ action: 'dance', outcome: 'run_over', runOver: true })
 
     const status = await (await fetch(`${baseUrl}/status`)).json()
-    expect(status).toMatchObject({ x: 3, y: 1, destroyed: true, runOver: true })
+    expect(status).toMatchObject({ x: 4, y: 2, destroyed: true, runOver: true })
   })
 
   it('reset restarts the run from the start cell, including after death', async () => {
-    await fetch(`${baseUrl}/turn_right?steps=1`)
-    await fetch(`${baseUrl}/forward?steps=1`)
-    await fetch(`${baseUrl}/turn_left?steps=1`)
+    await fetch(`${baseUrl}/turn_right?steps=2`)
+    await fetch(`${baseUrl}/forward?steps=2`)
+    await fetch(`${baseUrl}/turn_left?steps=2`)
     await fetch(`${baseUrl}/forward?steps=5`)
-    await fetch(`${baseUrl}/forward?steps=4`)
+    await fetch(`${baseUrl}/forward?steps=1`)
+    await fetch(`${baseUrl}/forward?steps=1`)
+    await fetch(`${baseUrl}/forward?steps=3`)
     expect(state.robot.destroyed).toBe(true)
 
     const reset = await (await fetch(`${baseUrl}/reset`, { method: 'POST' })).json()
@@ -185,28 +243,28 @@ describe('/distance over HTTP', () => {
 
   it('serves the stub centimetre scale on the wire, in absolute numbers', async () => {
     // The exact bytes, not a multiple of a constant imported from the code being tested. This is
-    // what pins the emulator to the scale the ultrasonic tool was calibrated against: one clear
-    // cell is 25.0, and a wall in the robot's face is the firmware's 2.0 floor.
+    // what pins the emulator to the scale the ultrasonic tool was calibrated against.
+    //
+    // Facing east the two front cells are 1,0 and 1,1. The upper one sees six clear cells to the
+    // edge; the lower one meets the wall at 3,1 after one. The sensor reports the nearer, so a
+    // two-cell-wide body is warned about the wall it would actually hit: 25.0, not 150.0.
     expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('25.0')
 
-    await fetch(`${baseUrl}/turn_left?steps=1`) // facing north, straight at the edge
+    await fetch(`${baseUrl}/turn_left?steps=2`) // facing north, straight at the edge
     expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('2.0')
 
-    await fetch(`${baseUrl}/turn_left?steps=2`) // facing south, two clear cells then the edge
-    expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('50.0')
+    await fetch(`${baseUrl}/turn_right?steps=4`) // facing south: four clear cells, then the edge
+    expect(await (await fetch(`${baseUrl}/distance`)).text()).toBe('100.0')
   })
 
   it('agrees with the world in front of the robot', async () => {
-    // Facing east from 0,0: one clear cell (1,0) and then the wall at 2,0.
     expect(parseFloat(await (await fetch(`${baseUrl}/distance`)).text())).toBe(CM_PER_CELL)
 
-    // Facing north from 0,0 there is nothing but the edge.
-    await fetch(`${baseUrl}/turn_left?steps=1`)
+    await fetch(`${baseUrl}/turn_left?steps=2`)
     expect(parseFloat(await (await fetch(`${baseUrl}/distance`)).text())).toBe(MIN_DISTANCE_CM)
 
-    // Facing south: two clear cells (0,1 and 0,2) and then the edge.
-    await fetch(`${baseUrl}/turn_left?steps=2`)
-    expect(parseFloat(await (await fetch(`${baseUrl}/distance`)).text())).toBe(2 * CM_PER_CELL)
+    await fetch(`${baseUrl}/turn_right?steps=4`)
+    expect(parseFloat(await (await fetch(`${baseUrl}/distance`)).text())).toBe(4 * CM_PER_CELL)
   })
 
   it('records the reading on /status', async () => {
@@ -257,14 +315,20 @@ describe('/capture', () => {
     return jpegJs.decode(bytes, { useTArray: true })
   }
 
+  /** Blue minus red at one pixel. The photographed chassis is blue-shelled; the terrain is not. */
+  function blueness(image: { width: number; data: Uint8Array }, px: number, py: number): number {
+    const offset = (py * image.width + px) * 4
+    return image.data[offset + 2] - image.data[offset]
+  }
+
   it('serves a decodable JPEG sized to the world', async () => {
     const image = await capture()
 
-    // Absolute pixels: the spec map is 6 cells across and 3 down, drawn at 32 px per cell.
+    // Absolute pixels: the spec map is 8 cells across and 6 down, drawn at 32 px per cell.
     // Expressed as `rows.length * CELL_PX` this would hold for any cell size, so the rendered
     // scale would have no coverage at all.
-    expect(image.width).toBe(192)
-    expect(image.height).toBe(96)
+    expect(image.width).toBe(256)
+    expect(image.height).toBe(192)
     expect(CELL_PX).toBe(32)
 
     // ...and the relationship, which is the property that must survive a change of map.
@@ -279,86 +343,198 @@ describe('/capture', () => {
     // indistinguishable. Written out, this says what a reader can check against the map above —
     // the cell we know is the obstacle is purple.
     const image = await capture()
-    expectColourAt(image, 4, 0, [255, 255, 255, 255]) // floor, white
-    expectColourAt(image, 2, 0, [128, 0, 192, 255]) // hard obstacle, purple
-    expectColourAt(image, 1, 1, [128, 128, 128, 255]) // soft obstacle, grey
-    expectColourAt(image, 3, 1, [255, 216, 0, 255]) // abyss, yellow
-    expectColourAt(image, 5, 1, [32, 176, 64, 255]) // green target
-    expectColourAt(image, 0, 2, [220, 32, 32, 255]) // red target
+    expectColourAt(image, 5, 0, [255, 255, 255, 255]) // floor, white
+    expectColourAt(image, 3, 1, [128, 0, 192, 255]) // hard obstacle, purple
+    expectColourAt(image, 2, 3, [128, 128, 128, 255]) // soft obstacle, grey
+    expectColourAt(image, 5, 3, [255, 216, 0, 255]) // abyss, yellow
+    expectColourAt(image, 7, 5, [32, 176, 64, 255]) // green target
+    expectColourAt(image, 0, 5, [220, 32, 32, 255]) // red target
   })
 
-  it('keeps every drawn marker distinguishable from every other', () => {
+  it('keeps every terrain colour distinguishable from every other', () => {
     // The companion to the literals above: those pin what is drawn, this pins that no two things
-    // an agent has to tell apart share a colour.
-    //
-    // `robot` belongs in this list and its absence was a real hole: the robot marker could be
-    // recoloured to the soft obstacle's exact grey and the whole suite stayed green, so the one
-    // test asserting that things are distinguishable exempted the most important distinction of
-    // all — the robot from the terrain it is standing on.
-    //
-    // `heading` is deliberately NOT here: the heading triangle is white, the same white as the
-    // floor, and that is correct because it is only ever drawn on top of the black robot body.
-    const drawn = ['floor', 'hard', 'soft', 'abyss', 'targetRed', 'targetGreen', 'robot'] as const
+    // an agent has to tell apart share a colour. The robot is not in this list any more because
+    // it is not a colour — it is a photograph, and the tests below are what pin it.
+    const drawn = ['floor', 'hard', 'soft', 'abyss', 'targetRed', 'targetGreen'] as const
     const seen = new Set(drawn.map((kind) => PALETTE[kind].slice(0, 3).join(',')))
     expect(seen.size).toBe(drawn.length)
   })
 
-  it('draws the robot on its own cell and moves the marker when the robot moves', async () => {
-    // Sample the trailing quarter of the cell: the robot's black body, behind the white
-    // heading triangle. The middle of the cell would be white for both a robot facing this way
-    // and an empty floor cell, which is exactly the confusion this test exists to rule out.
-    const behind = { fx: 0.2, fy: 0.5 }
+  it('draws a PHOTOGRAPH of the robot, not a flat marker', async () => {
+    // The whole point of the node: a vision model does not recognise a flat black square as a
+    // robot. The photographed chassis has a blue shell, so somewhere on the body there are
+    // strongly blue pixels. A flat black, grey or white marker has blue-minus-red of zero
+    // everywhere, and so does every terrain colour except the purple obstacle — which is why
+    // this samples the robot's own cells and nothing else.
+    const image = await capture()
 
-    // Written out, not read back from PALETTE. With the expected values taken from the module
-    // under test this test passed even when the robot was recoloured to the soft obstacle's grey.
-    const robotBlack = [0, 0, 0, 255] as const
-    const floorWhite = [255, 255, 255, 255] as const
+    let bluest = -255
+    for (let py = 0; py < CELL_PX * 2; py++) {
+      for (let px = 0; px < CELL_PX * 2; px++) bluest = Math.max(bluest, blueness(image, px, py))
+    }
+    // Measured at ~155 on the real photograph; 60 is a floor with room for encoder drift.
+    expect(bluest).toBeGreaterThan(60)
 
-    const before = await capture()
-    expectColourAt(before, 0, 0, robotBlack, behind)
-    expectColourAt(before, 1, 0, floorWhite, behind)
-
-    await fetch(`${baseUrl}/forward?steps=1`)
-
-    const after = await capture()
-    expectColourAt(after, 1, 0, robotBlack, behind)
-    expectColourAt(after, 0, 0, floorWhite, behind)
+    // ...and it is not a flat fill of any one colour either: the body has to show structure.
+    const samples = new Set<string>()
+    for (let py = 8; py < CELL_PX * 2 - 8; py += 4) {
+      for (let px = 8; px < CELL_PX * 2 - 8; px += 4) {
+        const offset = (py * image.width + px) * 4
+        samples.add([image.data[offset], image.data[offset + 1], image.data[offset + 2]].join(','))
+      }
+    }
+    expect(samples.size).toBeGreaterThan(20)
   })
 
-  it('shows an unambiguous heading indicator that rotates with the robot', async () => {
+  it('covers a 2x2 footprint and leaves the cells beside it alone', async () => {
+    // Anchored at 0,0, the body occupies 0,0 · 1,0 · 0,1 · 1,1. The far corner of that block is
+    // the discriminating sample: on a one-cell robot 1,1 is plain white floor.
+    const image = await capture()
+    const floorWhite = [255, 255, 255, 255] as const
+
+    const farCorner = (1 * CELL_PX + 16) * 1
+    const offset = ((1 * CELL_PX + 16) * image.width + farCorner) * 4
+    const atFarCorner = [image.data[offset], image.data[offset + 1], image.data[offset + 2]]
+    // Every channel well away from white: the chassis is dark, the floor is 255,255,255.
+    for (const channel of atFarCorner) expect(channel).toBeLessThan(160)
+
+    // ...and the body stops there. The cells one step beyond it on both axes are untouched floor.
+    expectColourAt(image, 2, 0, floorWhite)
+    expectColourAt(image, 0, 2, floorWhite)
+    expectColourAt(image, 2, 2, floorWhite)
+  })
+
+  it('composites the sprite over the terrain with alpha rather than punching a hole', async () => {
+    // The photograph's corners are transparent. If they were blitted opaquely they would paint
+    // the black they are stored as, which is exactly the black block this node exists to remove.
+    // So the floor underneath must still be showing through at the corners of the footprint.
+    const image = await capture()
+    const floorWhite = [255, 255, 255, 255] as const
+
+    for (const [px, py] of [
+      [2, 2],
+      [CELL_PX * 2 - 3, 2],
+      [2, CELL_PX * 2 - 3],
+      [CELL_PX * 2 - 3, CELL_PX * 2 - 3],
+    ]) {
+      const offset = (py * image.width + px) * 4
+      const actual = [image.data[offset], image.data[offset + 1], image.data[offset + 2]]
+      for (let channel = 0; channel < 3; channel++) {
+        expect(
+          Math.abs(actual[channel] - floorWhite[channel]),
+          `footprint pixel ${px},${py}: got ${actual.join(',')}`,
+        ).toBeLessThanOrEqual(16)
+      }
+    }
+  })
+
+  it('rotates the photograph to face each of the eight headings', async () => {
     /**
-     * The triangle's apex sits at the leading edge of the robot's cell, so the light pixels
-     * cluster on the side the robot faces. Comparing the two ends of an axis is what makes this
-     * a heading test rather than a "something white is present" test.
+     * There is no painted triangle any more — the photograph carries the heading, because the
+     * real chassis is visibly asymmetric front to back: the blue shell is the front and the bare
+     * board and cable are the back. So the test measures exactly that asymmetry, comparing the
+     * leading half of the body against the trailing half along a forward vector WRITTEN OUT BY
+     * HAND. A test that read the vector back out of `DELTA` would agree with any rotation table,
+     * including one that pointed every heading the same way.
      */
-    async function leadingEdgeBrightness(cellX: number, cellY: number) {
+    const FORWARD = [
+      { heading: 'east', fx: 1, fy: 0 },
+      { heading: 'southeast', fx: 0.7071, fy: 0.7071 },
+      { heading: 'south', fx: 0, fy: 1 },
+      { heading: 'southwest', fx: -0.7071, fy: 0.7071 },
+      { heading: 'west', fx: -1, fy: 0 },
+      { heading: 'northwest', fx: -0.7071, fy: -0.7071 },
+      { heading: 'north', fx: 0, fy: -1 },
+      { heading: 'northeast', fx: 0.7071, fy: -0.7071 },
+    ] as const
+
+    /** Mean blue-minus-red ahead of the body's centre, minus the same behind it. */
+    function frontMinusBack(
+      image: { width: number; data: Uint8Array },
+      fx: number,
+      fy: number,
+    ): number {
+      const size = CELL_PX * 2
+      let lead = 0
+      let leadCount = 0
+      let trail = 0
+      let trailCount = 0
+      for (let py = 0; py < size; py++) {
+        for (let px = 0; px < size; px++) {
+          const projection = (px - size / 2 + 0.5) * fx + (py - size / 2 + 0.5) * fy
+          if (projection > 8) {
+            lead += blueness(image, px, py)
+            leadCount++
+          } else if (projection < -8) {
+            trail += blueness(image, px, py)
+            trailCount++
+          }
+        }
+      }
+      return lead / leadCount - trail / trailCount
+    }
+
+    // The robot starts facing east, and each turn_right of one step advances 45 degrees, so the
+    // hand-written list above is walked in order by eight single steps — a full circle.
+    for (const { heading, fx, fy } of FORWARD) {
+      const status = await (await fetch(`${baseUrl}/status`)).json()
+      expect(status.heading, 'the turn sequence and the expected headings must stay in step').toBe(
+        heading,
+      )
+
       const image = await capture()
-      const read = (px: number, py: number) => image.data[(py * image.width + px) * 4]
-      const left = cellX * CELL_PX
-      const top = cellY * CELL_PX
-      const mid = Math.floor(CELL_PX / 2)
-      return {
-        north: read(left + mid, top + Math.floor(CELL_PX * 0.3)),
-        south: read(left + mid, top + Math.floor(CELL_PX * 0.7)),
-        west: read(left + Math.floor(CELL_PX * 0.3), top + mid),
-        east: read(left + Math.floor(CELL_PX * 0.7), top + mid),
+      // Measured at 42–46 on the real photograph, and it is 0 for a rotation-blind renderer.
+      expect(frontMinusBack(image, fx, fy), `blue shell should lead when facing ${heading}`)
+        .toBeGreaterThan(20)
+      // The perpendicular axis carries no such signal, which is what makes the number above a
+      // heading measurement rather than "the robot is somewhere in this square".
+      expect(Math.abs(frontMinusBack(image, -fy, fx)), `no false signal across ${heading}`)
+        .toBeLessThan(20)
+
+      await fetch(`${baseUrl}/turn_right?steps=1`)
+    }
+  })
+})
+
+/**
+ * Alpha compositing, asserted on the RAW raster rather than through the JPEG, because the
+ * property is a few units of colour wide and the encoder is not.
+ *
+ * The footprint's outer corners are FULLY transparent, so a renderer that merely skipped
+ * zero-alpha pixels and stamped everything else opaquely would still leave the floor showing
+ * there — which means a corner sample cannot tell real compositing from a stamp. The fringe
+ * around the chassis, where alpha is partial, is what distinguishes them: those pixels must take
+ * their colour partly from the terrain underneath.
+ */
+describe('the robot sprite is composited with alpha, not stamped', () => {
+  it('blends its semi-transparent fringe with whatever terrain is underneath', () => {
+    const start = { x: 1, y: 1, heading: 'north' } as const
+    const onFloor = createWorld({ id: 'on-floor', rows: ['....', '....', '....', '....'], start })
+    const onGreen = createWorld({ id: 'on-green', rows: ['....', '.gg.', '.gg.', '....'], start })
+    const robot = { x: 1, y: 1, heading: 'north' as const, destroyed: false }
+
+    const overFloor = renderRaster(onFloor, robot)
+    const overGreen = renderRaster(onGreen, robot)
+
+    // Red channel only: white floor is 255 and the green target is 32, so the two terrains are
+    // 223 apart and a pixel's blend fraction reads straight off the difference.
+    let opaque = 0
+    let terrain = 0
+    let blended = 0
+    for (let py = CELL_PX; py < CELL_PX * 3; py++) {
+      for (let px = CELL_PX; px < CELL_PX * 3; px++) {
+        const offset = (py * overFloor.width + px) * 4
+        const difference = Math.abs(overFloor.data[offset] - overGreen.data[offset])
+        if (difference <= 4) opaque++
+        else if (difference >= 200) terrain++
+        else blended++
       }
     }
 
-    // Start facing east at 0,0.
-    const east = await leadingEdgeBrightness(0, 0)
-    expect(east.east).toBeGreaterThan(east.west + 64)
-
-    await fetch(`${baseUrl}/turn_right?steps=1`) // south
-    const south = await leadingEdgeBrightness(0, 0)
-    expect(south.south).toBeGreaterThan(south.north + 64)
-
-    await fetch(`${baseUrl}/turn_right?steps=1`) // west
-    const west = await leadingEdgeBrightness(0, 0)
-    expect(west.west).toBeGreaterThan(west.east + 64)
-
-    await fetch(`${baseUrl}/turn_right?steps=1`) // north
-    const north = await leadingEdgeBrightness(0, 0)
-    expect(north.north).toBeGreaterThan(north.south + 64)
+    // All three populations must be non-trivial: solid chassis, bare terrain, and a real fringe
+    // between them. Measured at roughly 2400 / 1400 / 270 of the footprint's 4096 pixels.
+    expect(opaque).toBeGreaterThan(500)
+    expect(terrain).toBeGreaterThan(500)
+    expect(blended, 'the sprite fringe must take colour from the terrain beneath it').toBeGreaterThan(100)
   })
 })

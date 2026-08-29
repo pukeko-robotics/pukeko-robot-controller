@@ -7,9 +7,51 @@
  * rather than at the end of the path) cheap to assert without booting a server.
  */
 
-/** The four cardinals, in clockwise order, which is what makes the turn arithmetic a modulo. */
-export const HEADINGS = ['north', 'east', 'south', 'west'] as const
+/**
+ * The eight compass points, in clockwise order, which is what makes the turn arithmetic a modulo.
+ *
+ * One turn command step is 45°, so a right angle is two of them and `turn(state, 'right', 2)` is
+ * the old quarter-turn. Forward and backward then move the robot one cell in any of eight
+ * directions — like a king in chess: one cell per step, never a slide.
+ */
+export const HEADINGS = [
+  'north',
+  'northeast',
+  'east',
+  'southeast',
+  'south',
+  'southwest',
+  'west',
+  'northwest',
+] as const
 export type Heading = (typeof HEADINGS)[number]
+
+/** Degrees of rotation one turn step is worth. Eight headings around the circle. */
+export const DEGREES_PER_TURN_STEP = 45
+
+/**
+ * THE ROBOT IS TWO CELLS SQUARE AND STILL MOVES ONE CELL PER STEP.
+ *
+ * Half its own body length per step is the point: it makes the motion granular relative to the
+ * robot, the way real calibration feels.
+ *
+ * POSITION SEMANTICS, stated here because every later bug lives in them: `state.x, state.y` is
+ * the **top-left cell** of the footprint, and the occupied set is
+ * `(x,y), (x+1,y), (x,y+1), (x+1,y+1)`. So the anchor is a corner, not a centre, and a bounds or
+ * terrain question is never about one cell — it is about all four.
+ *
+ * A 2×2 square is rotationally symmetric, so a turn never re-anchors the footprint. Only the
+ * drawn sprite changes.
+ */
+export const FOOTPRINT_CELLS = 2
+
+/** The four cells a footprint occupies, as offsets from the top-left anchor. */
+export const FOOTPRINT_OFFSETS: readonly (readonly [number, number])[] = [
+  [0, 0],
+  [1, 0],
+  [0, 1],
+  [1, 1],
+]
 
 /**
  * What a cell is. The names are behavioural, not visual — the colours live in the renderer.
@@ -53,25 +95,46 @@ export interface World {
 /**
  * Phase one ships exactly one map, and it ships as data so that adding more is a data change.
  *
- * The layout is chosen to exercise the things a control loop has to cope with: an open floor to
- * calibrate on, a walled pocket holding the green target (reachable, but only from below), a
- * three-cell-wide abyss running down the middle that a careless multi-step move will fall into,
- * a soft obstacle on the left approach, and a red target in the open at the bottom.
+ * The layout exercises the things a control loop has to cope with: an open floor to calibrate on,
+ * a walled pocket holding the green target (reachable, but only from below), an abyss running
+ * down the middle that a careless multi-step move will fall into, a soft obstacle on the left
+ * approach, and a red target in the open at the bottom.
+ *
+ * EVERY OPENING IS TWO CELLS WIDE, because the robot is two cells wide. The arena the 1×1 robot
+ * drove had a one-cell pocket mouth and a one-cell rim around the walls; a 2×2 body cannot enter
+ * either, so the green target would have been unreachable and "reachable, but only from below"
+ * would have quietly become "not reachable at all" with every test still green. Widening the
+ * pocket is what keeps the map's stated purposes true of the body that now drives it.
+ *
+ *      x: 0    1    2    3    4    5    6    7    8    9   10   11   12   13
+ *  y=0    .    #    #    #    #    .    .    .    .    .    .    .    .    .
+ *  y=1    .    #    g    g    #    .    .    .    .    .    .    .    .    .
+ *  y=2    .    #    .    .    #    .    .    .    .    .    .    .    .    .
+ *  y=3    .    #    .    .    #    .    .    .    .    .    .    .    .    .
+ *  y=4    .    .    .    .    .    .    .    ~    ~    .    .    .    .    .
+ *  ...
+ *
+ * The pocket's mouth is the two-cell gap at x=2..3, y=4: the walls at x=1 and x=4 run from y=0
+ * to y=3 and the roof at y=0 closes the top, so the only footprint that reaches the two green
+ * cells is one that came up the mouth.
  */
 export const PHASE_ONE_MAP: WorldMap = {
   id: 'phase-one-arena',
   rows: [
-    '............',
-    '.###....###.',
-    '.#g#......#.',
-    '.#.#..~~..#.',
-    '......~~....',
-    '.s....~~..#.',
-    '..........#.',
-    '.....##...#.',
-    '....r.......',
+    '.####.........',
+    '.#gg#.........',
+    '.#..#.........',
+    '.#..#.........',
+    '.......~~.....',
+    '.......~~.....',
+    '.......~~.....',
+    '..............',
+    '.ss...........',
+    '..............',
+    '.........##...',
+    '....rr........',
   ],
-  start: { x: 1, y: 8, heading: 'north' },
+  start: { x: 4, y: 8, heading: 'north' },
 }
 
 export function createWorld(map: WorldMap = PHASE_ONE_MAP): World {
@@ -90,11 +153,18 @@ export function createWorld(map: WorldMap = PHASE_ONE_MAP): World {
     })
   })
   const world: World = { id: map.id, width, height: map.rows.length, cells, start: map.start }
-  const startKind = cellAt(world, map.start.x, map.start.y)
-  if (startKind === null || startKind === 'hard' || startKind === 'abyss') {
-    throw new Error(
-      `world "${map.id}": start ${map.start.x},${map.start.y} is ${startKind ?? 'out of bounds'}`,
-    )
+  // The WHOLE footprint is validated, not just the anchor cell. A 2×2 body whose anchor is on
+  // clear floor can still have a corner in a wall or over the edge, and a start like that puts
+  // the robot inside geometry it could never have driven into.
+  for (const [offsetX, offsetY] of FOOTPRINT_OFFSETS) {
+    const x = map.start.x + offsetX
+    const y = map.start.y + offsetY
+    const kind = cellAt(world, x, y)
+    if (kind === null || kind === 'hard' || kind === 'abyss') {
+      throw new Error(
+        `world "${map.id}": start ${map.start.x},${map.start.y} puts a ${FOOTPRINT_CELLS}x${FOOTPRINT_CELLS} footprint corner on ${x},${y}, which is ${kind ?? 'out of bounds'}`,
+      )
+    }
   }
   return world
 }
@@ -117,18 +187,65 @@ export function initialState(world: World): RobotWorldState {
   return { x: world.start.x, y: world.start.y, heading: world.start.heading, destroyed: false }
 }
 
+/**
+ * One cell of travel per heading. A diagonal moves BOTH axes by one — a king's step, not a
+ * queen's slide, and not a knight's.
+ *
+ * A diagonal step therefore leaves the destination footprint overlapping the source footprint in
+ * exactly one cell, so the robot never squeezes between two diagonally-touching walls: those two
+ * walls are themselves cells of the destination footprint and refuse it. That is why a plain
+ * destination-footprint test is sufficient here and no separate corner-cutting rule is needed.
+ */
 const DELTA: Readonly<Record<Heading, { dx: number; dy: number }>> = {
   north: { dx: 0, dy: -1 },
+  northeast: { dx: 1, dy: -1 },
   east: { dx: 1, dy: 0 },
+  southeast: { dx: 1, dy: 1 },
   south: { dx: 0, dy: 1 },
+  southwest: { dx: -1, dy: 1 },
   west: { dx: -1, dy: 0 },
+  northwest: { dx: -1, dy: -1 },
 }
 
-/** Rotate a heading by `quarterTurns` (positive is clockwise), wrapping in both directions. */
-export function rotate(heading: Heading, quarterTurns: number): Heading {
+/** Rotate a heading by `turnSteps` of 45° (positive is clockwise), wrapping in both directions. */
+export function rotate(heading: Heading, turnSteps: number): Heading {
   const from = HEADINGS.indexOf(heading)
-  const to = (((from + quarterTurns) % 4) + 4) % 4
+  const to = (((from + turnSteps) % HEADINGS.length) + HEADINGS.length) % HEADINGS.length
   return HEADINGS[to]
+}
+
+/** What a whole 2×2 footprint anchored at `x,y` would run into, worst case first. */
+type FootprintVerdict =
+  | { kind: 'clear' }
+  | { kind: 'blocked'; x: number; y: number; reason: 'edge' | 'obstacle' }
+  | { kind: 'fatal'; x: number; y: number }
+  | { kind: 'snag'; x: number; y: number }
+
+/**
+ * Judge a destination footprint as a whole.
+ *
+ * Precedence is deliberate and is the thing a single-cell implementation cannot express: a wall
+ * under ANY corner refuses the move outright, so a footprint straddling both a wall and an abyss
+ * is blocked rather than fatal — the robot never gets to enter it. Below that, an abyss under any
+ * corner is fatal, and a soft cell under any corner ends the move there.
+ */
+function probeFootprint(world: World, x: number, y: number): FootprintVerdict {
+  let fatal: { x: number; y: number } | null = null
+  let snag: { x: number; y: number } | null = null
+
+  for (const [offsetX, offsetY] of FOOTPRINT_OFFSETS) {
+    const cellX = x + offsetX
+    const cellY = y + offsetY
+    const kind = cellAt(world, cellX, cellY)
+    if (kind === null) return { kind: 'blocked', x: cellX, y: cellY, reason: 'edge' }
+    if (kind === 'hard') return { kind: 'blocked', x: cellX, y: cellY, reason: 'obstacle' }
+    if (kind === 'abyss' && fatal === null) fatal = { x: cellX, y: cellY }
+    if (kind === 'soft' && snag === null) snag = { x: cellX, y: cellY }
+  }
+
+  if (fatal !== null) return { kind: 'fatal', ...fatal }
+  if (snag !== null) return { kind: 'snag', ...snag }
+  return { kind: 'clear' }
 }
 
 export type MoveOutcome =
@@ -162,11 +279,13 @@ export interface MoveResult {
  * abyss cell rather than wherever the fifth step would have landed. Resolving the move as one
  * jump and then testing only the destination looks entirely plausible and gets both wrong.
  *
- * Per cell entered:
- *  - bounds or a hard obstacle → that step is a no-op and the run continues, so a model that
- *    keeps pushing forward gets a truthful "you did not move" rather than a silent failure;
- *  - an abyss → the robot is destroyed on that cell and the loop stops;
- *  - a soft obstacle → the robot enters it and the move stops there: a partial, recoverable move.
+ * Per step, the destination FOOTPRINT is what is tested — all four cells, never just the anchor:
+ *  - bounds or a hard obstacle under any corner → that step is a no-op and the run continues, so
+ *    a model that keeps pushing forward gets a truthful "you did not move" rather than a silent
+ *    failure;
+ *  - an abyss under any corner → the robot is destroyed there and the loop stops;
+ *  - a soft obstacle under any corner → the robot enters and the move stops there: a partial,
+ *    recoverable move.
  */
 export function move(
   world: World,
@@ -188,15 +307,15 @@ export function move(
   for (let i = 0; i < steps; i++) {
     const nextX = x + dx * sign
     const nextY = y + dy * sign
-    const kind = cellAt(world, nextX, nextY)
+    const verdict = probeFootprint(world, nextX, nextY)
 
-    if (kind === null || kind === 'hard') {
+    if (verdict.kind === 'blocked') {
       blockedSteps++
       outcome = 'blocked'
       detail =
-        kind === null
-          ? `Blocked by the edge of the world at ${nextX},${nextY}. Moved ${stepsTaken} of ${steps} cell(s).`
-          : `Blocked by an obstacle at ${nextX},${nextY}. Moved ${stepsTaken} of ${steps} cell(s).`
+        verdict.reason === 'edge'
+          ? `Blocked by the edge of the world at ${verdict.x},${verdict.y}. Moved ${stepsTaken} of ${steps} cell(s).`
+          : `Blocked by an obstacle at ${verdict.x},${verdict.y}. Moved ${stepsTaken} of ${steps} cell(s).`
       continue
     }
 
@@ -204,16 +323,16 @@ export function move(
     y = nextY
     stepsTaken++
 
-    if (kind === 'abyss') {
+    if (verdict.kind === 'fatal') {
       destroyed = true
       outcome = 'destroyed'
-      detail = `Fell into the abyss at ${x},${y} after ${stepsTaken} of ${steps} cell(s). The robot is destroyed and the run is over.`
+      detail = `Fell into the abyss at ${verdict.x},${verdict.y} after ${stepsTaken} of ${steps} cell(s). The robot is destroyed and the run is over.`
       break
     }
 
-    if (kind === 'soft') {
+    if (verdict.kind === 'snag') {
       outcome = 'partial'
-      detail = `Snagged on a soft obstacle at ${x},${y}; the move stopped there after ${stepsTaken} of ${steps} cell(s).`
+      detail = `Snagged on a soft obstacle at ${verdict.x},${verdict.y}; the move stopped there after ${stepsTaken} of ${steps} cell(s).`
       break
     }
   }
@@ -228,7 +347,14 @@ export function move(
   }
 }
 
-/** Turning is always possible while the robot is alive, and never moves it. */
+/**
+ * Turning is always possible while the robot is alive, and never moves it.
+ *
+ * The `detail` string is the whole interface to the agent — the observation is what the model
+ * reasons from — so it states the arithmetic the model has to do: how many 45° steps, and how
+ * many degrees that adds up to. It must never say "quarter-turn": one step has not been 90°
+ * since the robot gained eight headings, and a model told otherwise will over-rotate by double.
+ */
 export function turn(
   state: RobotWorldState,
   direction: 'left' | 'right',
@@ -237,13 +363,14 @@ export function turn(
   if (state.destroyed) return runOverResult(state, steps)
 
   const heading = rotate(state.heading, direction === 'right' ? steps : -steps)
+  const degrees = steps * DEGREES_PER_TURN_STEP
   return {
     state: { ...state, heading },
     requestedSteps: steps,
     stepsTaken: steps,
     blockedSteps: 0,
     outcome: 'moved',
-    detail: `Turned ${direction} ${steps} quarter-turn(s); now facing ${heading}.`,
+    detail: `Turned ${direction} ${steps} step(s) of ${DEGREES_PER_TURN_STEP} degrees, which is ${degrees} degrees in total; now facing ${heading}.`,
   }
 }
 
@@ -273,18 +400,28 @@ export const CM_PER_CELL = 25
 export const MIN_DISTANCE_CM = 2
 
 /**
- * Distance to the first blocking cell ahead, on the same centimetre-ish scale the stub faked,
- * so the ultrasonic tool keeps meaning what it meant.
+ * The footprint cells that have open world in front of them — the robot's leading face.
  *
- * An abyss is transparent here, and that is a modelling choice worth knowing about: a downward
- * hole reflects nothing back to a forward-facing ultrasonic, so the sensor cannot warn about it.
- * A soft obstacle is solid enough to echo, so it blocks the beam even though it can be driven
- * into.
+ * A cell is on the leading face when the cell one step along the heading is NOT part of the same
+ * footprint. For a cardinal heading that is the two cells of the front edge; for a diagonal it is
+ * the three cells of the leading corner's L. Defining it this way rather than by a per-heading
+ * table means no ray ever starts by passing through the robot's own body, which is the property
+ * that actually has to hold.
  */
-export function distanceCm(world: World, state: RobotWorldState): number {
+function leadingCells(state: RobotWorldState): Array<{ x: number; y: number }> {
   const { dx, dy } = DELTA[state.heading]
-  let x = state.x
-  let y = state.y
+  const inFootprint = (offsetX: number, offsetY: number) =>
+    offsetX >= 0 && offsetX < FOOTPRINT_CELLS && offsetY >= 0 && offsetY < FOOTPRINT_CELLS
+  return FOOTPRINT_OFFSETS.filter(
+    ([offsetX, offsetY]) => !inFootprint(offsetX + dx, offsetY + dy),
+  ).map(([offsetX, offsetY]) => ({ x: state.x + offsetX, y: state.y + offsetY }))
+}
+
+/** Clear cells between one leading cell and the first thing that echoes, capped at the scan range. */
+function clearCellsAhead(world: World, from: { x: number; y: number }, heading: Heading): number {
+  const { dx, dy } = DELTA[heading]
+  let x = from.x
+  let y = from.y
   let free = 0
 
   while (free < MAX_SCAN_CELLS) {
@@ -295,5 +432,31 @@ export function distanceCm(world: World, state: RobotWorldState): number {
     free++
   }
 
+  return free
+}
+
+/**
+ * Distance to the first blocking cell ahead, on the same centimetre-ish scale the stub faked,
+ * so the ultrasonic tool keeps meaning what it meant.
+ *
+ * CAST ORIGIN — the choice this needed once the body stopped being a single cell. The sensor is
+ * modelled as sitting at the CENTRE OF THE LEADING EDGE of the 2×2 chassis, which is where a
+ * forward-facing ultrasonic actually sits. That centre is a lattice point, not a cell: on a
+ * cardinal heading the beam runs exactly along the boundary between the two front cells' columns
+ * (or rows), grazing both. The faithful discretisation of a ray that grazes two cells is to take
+ * whichever returns first, so the reading is the MINIMUM over rays cast from each cell of the
+ * leading face. A single arbitrarily-chosen front corner would have been the alternative, and it
+ * is the wrong one: it reports open ground while the other half of a two-cell-wide body drives
+ * into a wall.
+ *
+ * An abyss is transparent here, and that is a modelling choice worth knowing about: a downward
+ * hole reflects nothing back to a forward-facing ultrasonic, so the sensor cannot warn about it.
+ * A soft obstacle is solid enough to echo, so it blocks the beam even though it can be driven
+ * into.
+ */
+export function distanceCm(world: World, state: RobotWorldState): number {
+  const free = Math.min(
+    ...leadingCells(state).map((cell) => clearCellsAhead(world, cell, state.heading)),
+  )
   return Math.max(MIN_DISTANCE_CM, free * CM_PER_CELL)
 }

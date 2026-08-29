@@ -1,5 +1,18 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import jpegJs from 'jpeg-js'
-import { cellAt, type CellKind, type RobotWorldState, type World } from './world.js'
+import { PNG } from 'pngjs'
+import {
+  DEGREES_PER_TURN_STEP,
+  FOOTPRINT_CELLS,
+  HEADINGS,
+  cellAt,
+  type CellKind,
+  type Heading,
+  type RobotWorldState,
+  type World,
+} from './world.js'
 
 /**
  * Renders the grid world to a JPEG, as seen by an external camera looking straight down.
@@ -14,32 +27,39 @@ import { cellAt, type CellKind, type RobotWorldState, type World } from './world
  * deliberate future option; there is no viewpoint switch here on purpose, because a half-built
  * one would invite exactly the assumption above to be made silently.
  *
- * Drawing is done by hand into a raw RGBA buffer and handed to a pure-JS JPEG encoder. Flat
- * rectangles and one triangle need no Canvas2D implementation, and staying pure JS keeps this
- * repository free of native binaries and postinstall build steps.
+ * THE ROBOT IS A PHOTOGRAPH, NOT A MARKER, AND THAT IS THE WHOLE POINT OF IT. The terrain is
+ * still hand-drawn flat colour, but the robot is the real overhead photograph of the chassis,
+ * composited over the terrain with alpha. A vision model asked to find itself in the frame does
+ * not recognise a flat black square as a robot — it reports no wires, no blue LED, none of the
+ * features it has learned a robot has — and every navigation prompt a student writes begins with
+ * exactly that question. Do not replace it with a shape, and do not paint anything on top of it:
+ * an overlay across the body destroys the recognisability it is here to buy.
+ *
+ * Drawing stays pure JS — flat rectangles plus one alpha blit, decoded by `pngjs` and encoded by
+ * `jpeg-js`, with no Canvas2D, no native binaries and no postinstall build step.
  */
 
-/** Pixels per world cell. Large enough that the heading triangle is unambiguous when scaled. */
+/** Pixels per world cell. Large enough that the photographed chassis is legible when scaled. */
 export const CELL_PX = 32
 
+/** The robot's drawn size: its 2×2-cell footprint, in pixels. */
+export const SPRITE_PX = CELL_PX * FOOTPRINT_CELLS
+
 /**
- * The palette. `robot` is the robot's own marker; the rest are the terrain colours.
+ * The terrain palette. The robot is not in here any more — it is a photograph, not a colour.
  *
  * `soft` is the one colour the world's vocabulary did not dictate. It is a mid grey, chosen to
  * be plainly distinct from both the white floor and the purple hard obstacle, because the
  * difference the agent has to see is "I can enter this but it will cost me" versus "I cannot
  * enter this at all".
  */
-export const PALETTE: Readonly<Record<CellKind | 'robot' | 'heading' | 'grid', RgbaColour>> = {
+export const PALETTE: Readonly<Record<CellKind | 'grid', RgbaColour>> = {
   floor: [255, 255, 255, 255],
   hard: [128, 0, 192, 255],
   soft: [128, 128, 128, 255],
   abyss: [255, 216, 0, 255],
   targetRed: [220, 32, 32, 255],
   targetGreen: [32, 176, 64, 255],
-  robot: [0, 0, 0, 255],
-  /** The heading triangle, drawn on top of the black robot marker so it reads at a glance. */
-  heading: [255, 255, 255, 255],
   grid: [200, 200, 200, 255],
 }
 
@@ -78,56 +98,133 @@ function fillRect(
 }
 
 /**
- * The robot's heading marker: a triangle whose apex sits at the leading edge of its cell.
+ * How many samples per axis each destination pixel averages when the photograph is scaled down.
  *
- * A dot with a stripe, or a marker that only differs by rotation symmetry, leaves "which way is
- * it facing?" ambiguous at small scales — and that question is the one the agent most needs the
- * picture to answer.
+ * The source is 320 px across and the sprite is 64, a 5:1 reduction, so a single nearest-
+ * neighbour sample per pixel throws away 24 of every 25 source pixels and turns the ribbon wires
+ * into speckle. Nine samples is enough to keep them reading as wires, and this runs eight times
+ * at startup and never again.
  */
-function fillHeadingTriangle(
-  raster: Raster,
-  cellLeft: number,
-  cellTop: number,
-  heading: RobotWorldState['heading'],
-  colour: RgbaColour,
-): void {
-  const size = CELL_PX
-  const centre = size / 2
-  const inset = Math.round(size * 0.125)
-  /** How far back from the leading edge the triangle reaches: the front half of the cell. */
-  const axisLength = Math.round(size * 0.4)
-  const baseHalfWidth = Math.round(size * 0.28)
+const SUPERSAMPLE = 3
 
-  // `row` runs from the apex, which sits at the leading edge, back towards the base. Keeping
-  // the whole triangle in the front half of the cell is what makes the heading legible at a
-  // glance — and it is why "which half of the cell is bright" is a sound thing to assert on.
-  for (let row = 0; row < axisLength; row++) {
-    const halfWidth = Math.round((row / (axisLength - 1)) * baseHalfWidth)
-    for (let offset = -halfWidth; offset <= halfWidth; offset++) {
-      let x: number
-      let y: number
-      switch (heading) {
-        case 'north':
-          x = cellLeft + centre + offset
-          y = cellTop + inset + row
-          break
-        case 'south':
-          x = cellLeft + centre + offset
-          y = cellTop + size - inset - row
-          break
-        case 'east':
-          x = cellLeft + size - inset - row
-          y = cellTop + centre + offset
-          break
-        case 'west':
-          x = cellLeft + inset + row
-          y = cellTop + centre + offset
-          break
+/**
+ * Scale the photograph down to `sizePx` and rotate it `degrees` clockwise, in one pass.
+ *
+ * Destination pixels are mapped BACK into the source, so every output pixel is covered exactly
+ * once and no gaps open up at 45°. Colour is averaged weighted by alpha: the transparent region
+ * around the chassis is transparent *black*, and averaging it in unweighted would ring the robot
+ * with a dark halo that looks like the marker this node exists to delete.
+ *
+ * A 45° rotation cannot keep the corners of a square, and does not need to: the photograph's own
+ * corners are fully transparent.
+ */
+function rotatedSprite(source: Raster, sizePx: number, degrees: number): Raster {
+  const out = createRaster(sizePx, sizePx)
+  const radians = (degrees * Math.PI) / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const destCentre = sizePx / 2
+  const sourceCentreX = source.width / 2
+  const sourceCentreY = source.height / 2
+  const scale = source.width / sizePx
+  const samples = SUPERSAMPLE * SUPERSAMPLE
+
+  for (let destY = 0; destY < sizePx; destY++) {
+    for (let destX = 0; destX < sizePx; destX++) {
+      let red = 0
+      let green = 0
+      let blue = 0
+      let alphaSum = 0
+
+      for (let subY = 0; subY < SUPERSAMPLE; subY++) {
+        for (let subX = 0; subX < SUPERSAMPLE; subX++) {
+          const u = (destX + (subX + 0.5) / SUPERSAMPLE - destCentre) * scale
+          const v = (destY + (subY + 0.5) / SUPERSAMPLE - destCentre) * scale
+          // The inverse of a clockwise screen rotation (y grows downwards) by `degrees`.
+          const sourceX = Math.floor(sourceCentreX + u * cos + v * sin)
+          const sourceY = Math.floor(sourceCentreY - u * sin + v * cos)
+          if (sourceX < 0 || sourceY < 0 || sourceX >= source.width || sourceY >= source.height) {
+            continue
+          }
+          const offset = (sourceY * source.width + sourceX) * 4
+          const alpha = source.data[offset + 3]
+          red += source.data[offset] * alpha
+          green += source.data[offset + 1] * alpha
+          blue += source.data[offset + 2] * alpha
+          alphaSum += alpha
+        }
       }
-      setPixel(raster, Math.round(x), Math.round(y), colour)
+
+      const offset = (destY * sizePx + destX) * 4
+      out.data[offset] = alphaSum === 0 ? 0 : Math.round(red / alphaSum)
+      out.data[offset + 1] = alphaSum === 0 ? 0 : Math.round(green / alphaSum)
+      out.data[offset + 2] = alphaSum === 0 ? 0 : Math.round(blue / alphaSum)
+      out.data[offset + 3] = Math.round(alphaSum / samples)
+    }
+  }
+
+  return out
+}
+
+/** Composite a sprite over whatever is already in the raster, honouring its alpha channel. */
+function blitSprite(raster: Raster, left: number, top: number, sprite: Raster): void {
+  for (let y = 0; y < sprite.height; y++) {
+    for (let x = 0; x < sprite.width; x++) {
+      const source = (y * sprite.width + x) * 4
+      const alpha = sprite.data[source + 3]
+      if (alpha === 0) continue
+
+      const destX = left + x
+      const destY = top + y
+      if (destX < 0 || destY < 0 || destX >= raster.width || destY >= raster.height) continue
+
+      const dest = (destY * raster.width + destX) * 4
+      for (let channel = 0; channel < 3; channel++) {
+        raster.data[dest + channel] = Math.round(
+          (sprite.data[source + channel] * alpha + raster.data[dest + channel] * (255 - alpha)) /
+            255,
+        )
+      }
+      raster.data[dest + 3] = 255
     }
   }
 }
+
+/**
+ * The overhead photograph of the real chassis. Provenance: `docs/assets/` in the takahē repo.
+ *
+ * Resolved by handing `fileURLToPath` the module's own URL as a STRING, rather than by building a
+ * `new URL(...)` relative to it. The unit suite runs under jsdom, which replaces the global `URL`
+ * with its own class, and a URL object made by that class is not one `fileURLToPath` accepts — it
+ * throws "The URL must be of scheme file", which reads like a broken asset path and is not one.
+ * The string form takes `fileURLToPath`'s own parsing branch and is unaffected.
+ */
+const SPRITE_SOURCE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'assets',
+  'robot-top-down.png',
+)
+
+/**
+ * Decode once and pre-rotate all eight headings at startup, so rendering a frame stays a blit.
+ *
+ * The photograph is taken with the robot facing UP, so the rotation for a heading is simply its
+ * position in the clockwise `HEADINGS` cycle times 45°. That is derived from the cycle rather
+ * than written as a second table on purpose: a table would be a duplicate of `HEADINGS`' order
+ * and could silently drift out of step with it.
+ */
+function loadRobotSprites(): Readonly<Record<Heading, Raster>> {
+  const png = PNG.sync.read(readFileSync(SPRITE_SOURCE_PATH))
+  const source: Raster = { width: png.width, height: png.height, data: new Uint8Array(png.data) }
+
+  const sprites = {} as Record<Heading, Raster>
+  for (const [index, heading] of HEADINGS.entries()) {
+    sprites[heading] = rotatedSprite(source, SPRITE_PX, index * DEGREES_PER_TURN_STEP)
+  }
+  return sprites
+}
+
+const ROBOT_SPRITES = loadRobotSprites()
 
 /** Draw the world and the robot into a raw RGBA raster. */
 export function renderRaster(world: World, state: RobotWorldState): Raster {
@@ -142,6 +239,7 @@ export function renderRaster(world: World, state: RobotWorldState): Raster {
   }
 
   // Faint cell separators, so a run of identically-coloured cells is still countable by eye.
+  // Drawn before the robot, so the robot's own footprint is not ruled across.
   for (let y = 0; y < world.height; y++) {
     for (let x = 0; x < world.width; x++) {
       for (let i = 0; i < CELL_PX; i++) {
@@ -151,11 +249,9 @@ export function renderRaster(world: World, state: RobotWorldState): Raster {
     }
   }
 
-  const left = state.x * CELL_PX
-  const top = state.y * CELL_PX
-  // A destroyed robot is drawn on the cell it fell into, so the final frame explains the ending.
-  fillRect(raster, left + 2, top + 2, CELL_PX - 4, CELL_PX - 4, PALETTE.robot)
-  fillHeadingTriangle(raster, left, top, state.heading, PALETTE.heading)
+  // The sprite covers the whole 2×2 footprint anchored at the robot's top-left cell. A destroyed
+  // robot is drawn where it fell, so the final frame explains the ending.
+  blitSprite(raster, state.x * CELL_PX, state.y * CELL_PX, ROBOT_SPRITES[state.heading])
 
   return raster
 }
