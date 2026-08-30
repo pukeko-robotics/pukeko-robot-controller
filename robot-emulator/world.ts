@@ -1,57 +1,55 @@
 /**
- * The grid world the emulator drives a robot around in.
+ * The world the emulator drives a robot around in.
  *
- * Everything here is pure: a map is data, a state is a plain object, and every operation returns
- * a new state plus a description of what happened. That is deliberate — it is what makes the
- * behaviours that actually matter (stopping at a wall, dying on the abyss cell you reached
- * rather than at the end of the path) cheap to assert without booting a server.
+ * Everything here is pure: a map is data, a state is a plain object, the random
+ * source is a seed carried in that state, and every operation returns a new state plus a
+ * description of what happened. That is deliberate — it is what makes the behaviours that
+ * actually matter (stopping at a wall, dying on the abyss the body's centre reached rather than
+ * at the end of the path, two runs from one seed being identical) cheap to assert without
+ * booting a server. `Math.random()` anywhere in this module is a defect.
+ *
+ * ============================ THE UNIT INVARIANT ============================
+ *
+ * EVERY LENGTH IN THIS MODULE IS IN CENTIMETRES AND EVERY ANGLE IS IN DEGREES.
+ *
+ * A tile is a MAP-AUTHORING CONVENIENCE and nothing else: it is what lets terrain be a few rows
+ * of legend characters that a human can type. The tile's own size is one more setting, in
+ * centimetres, and it belongs to the MAP because it is a property of the world rather than of
+ * the robot. Outside `WorldMap.rows`, `World.cells` and the `*Tiles` fields that index them,
+ * NOTHING is measured in tiles — not the body, not the stride, not the pose, not the sensor.
+ *
+ * So: how many tiles a body covers is DERIVED, never configured. A 10 cm robot on a 5 cm grid
+ * covers 2x2 tiles because the arithmetic says so, and a 20 cm robot on the same grid covers
+ * 4x4 without anyone editing a constant. That is what makes a second robot cheap.
+ *
+ * Where a value's unit is not obvious from its shape, the unit is IN ITS NAME (`xCm`,
+ * `headingDeg`, `widthTiles`). A bare number that used to mean tiles and now means centimetres
+ * type-checks, looks right, and is wrong by a factor of the tile size; the naming convention is
+ * the only thing standing between a reader and that mistake, so do not relax it.
+ *
+ * Changing a map's tile size RESCALES EVERY MAP ALREADY AUTHORED, because a map's geometry is
+ * written in tiles. That is a deliberate act, not a tuning knob.
+ *
+ * ============================== POSE SEMANTICS ==============================
+ *
+ * Stated here as loudly as the old cell-anchor semantics were, because every later bug lives in
+ * them:
+ *
+ *   `state.xCm, state.yCm` is the CENTRE of the robot's body, in centimetres from the map's
+ *   top-left corner. It is NOT a corner and it is NOT a tile index. A corner anchor stops being
+ *   meaningful the moment the body can sit at an angle, which it now can.
+ *
+ *   `state.headingDeg` is degrees CLOCKWISE FROM NORTH, normalised to [0, 360). North is up the
+ *   map, which is -y, so the forward unit vector is `(sin, -cos)` — see `forwardVector`. 0 is
+ *   north, 90 is east, 180 south, 270 west. There is no eight-name enum any more: the robot
+ *   turns 15 degrees at a time and lands wherever it lands.
  */
 
-/**
- * The eight compass points, in clockwise order, which is what makes the turn arithmetic a modulo.
- *
- * One turn command step is 45°, so a right angle is two of them and `turn(state, 'right', 2)` is
- * the old quarter-turn. Forward and backward then move the robot one cell in any of eight
- * directions — like a king in chess: one cell per step, never a slide.
- */
-export const HEADINGS = [
-  'north',
-  'northeast',
-  'east',
-  'southeast',
-  'south',
-  'southwest',
-  'west',
-  'northwest',
-] as const
-export type Heading = (typeof HEADINGS)[number]
-
-/** Degrees of rotation one turn step is worth. Eight headings around the circle. */
-export const DEGREES_PER_TURN_STEP = 45
-
-/**
- * THE ROBOT IS TWO CELLS SQUARE AND STILL MOVES ONE CELL PER STEP.
- *
- * Half its own body length per step is the point: it makes the motion granular relative to the
- * robot, the way real calibration feels.
- *
- * POSITION SEMANTICS, stated here because every later bug lives in them: `state.x, state.y` is
- * the **top-left cell** of the footprint, and the occupied set is
- * `(x,y), (x+1,y), (x,y+1), (x+1,y+1)`. So the anchor is a corner, not a centre, and a bounds or
- * terrain question is never about one cell — it is about all four.
- *
- * A 2×2 square is rotationally symmetric, so a turn never re-anchors the footprint. Only the
- * drawn sprite changes.
- */
-export const FOOTPRINT_CELLS = 2
-
-/** The four cells a footprint occupies, as offsets from the top-left anchor. */
-export const FOOTPRINT_OFFSETS: readonly (readonly [number, number])[] = [
-  [0, 0],
-  [1, 0],
-  [0, 1],
-  [1, 1],
-]
+import {
+  DEFAULT_ROBOT_PHYSICAL_PROFILE,
+  type RobotBodyProfile,
+  type RobotPhysicalProfile,
+} from '../src/agent/robotPresets/physical.js'
 
 /**
  * What a cell is. The names are behavioural, not visual — the colours live in the renderer.
@@ -59,7 +57,7 @@ export const FOOTPRINT_OFFSETS: readonly (readonly [number, number])[] = [
  * - `floor`       drivable
  * - `hard`        an obstacle that cannot be entered at all
  * - `soft`        an obstacle that can be entered but ends the move there; recoverable
- * - `abyss`       fatal; entering it ends the run
+ * - `abyss`       fatal; taking the body's centre into it ends the run
  * - `targetRed`   drivable, and a thing the agent may be asked to seek
  * - `targetGreen` drivable, likewise
  */
@@ -75,56 +73,96 @@ export const CELL_LEGEND: Readonly<Record<string, CellKind>> = {
   g: 'targetGreen',
 }
 
+/**
+ * The tile size a map gets when it does not state one, in centimetres.
+ *
+ * 5 cm is the size that makes the shipped 14x12 arena 70 x 60 cm, which is the arena actually
+ * used with the real robot — so the scale is confirmed against hardware rather than merely
+ * being self-consistent.
+ */
+export const DEFAULT_TILE_SIZE_CM = 5
+
+/** Compass names as heading degrees, for map authors. The pose itself is always a number. */
+export const NORTH_DEG = 0
+export const EAST_DEG = 90
+export const SOUTH_DEG = 180
+export const WEST_DEG = 270
+
 export interface WorldMap {
   /** Stable identifier, so a response or a log can say which world it is talking about. */
   id: string
   /** Rows of legend characters, top row first. Every row must be the same length. */
   rows: readonly string[]
-  start: { x: number; y: number; heading: Heading }
+  /**
+   * How many centimetres one tile is worth. Defaults to {@link DEFAULT_TILE_SIZE_CM}.
+   *
+   * This is the ONE place tiles and centimetres meet. Changing it rescales the whole map, so it
+   * is a property of the world, deliberately chosen — never a knob to turn to make a robot fit.
+   */
+  tileSizeCm?: number
+  /**
+   * Where the robot starts. `xTiles, yTiles` name a TILE — map geometry is written in tiles —
+   * and the robot's body centre is placed at the centre of that tile. `headingDeg` is degrees
+   * clockwise from north; the {@link NORTH_DEG} constants above exist so an author need not
+   * remember which way 90 points.
+   */
+  start: { xTiles: number; yTiles: number; headingDeg: number }
 }
 
 export interface World {
   id: string
-  width: number
-  height: number
-  /** Row-major, `cells[y][x]`. */
+  /** Grid extent, in tiles. The only quantity in this module legitimately counted in tiles. */
+  widthTiles: number
+  heightTiles: number
+  tileSizeCm: number
+  /** The same extent as a physical size — `widthTiles * tileSizeCm`. */
+  widthCm: number
+  heightCm: number
+  /** Row-major, `cells[yTiles][xTiles]`. */
   cells: readonly (readonly CellKind[])[]
-  start: { x: number; y: number; heading: Heading }
+  /** The start as authored, in tiles. */
+  start: { xTiles: number; yTiles: number; headingDeg: number }
+  /** The same start as a pose, in centimetres: the centre of the start tile. */
+  startCm: { xCm: number; yCm: number; headingDeg: number }
 }
 
 /**
  * Phase one ships exactly one map, and it ships as data so that adding more is a data change.
  *
- * The layout exercises the things a control loop has to cope with: an open floor to calibrate on,
- * a walled pocket holding the green target (reachable, but only from below), an abyss running
- * down the middle that a careless multi-step move will fall into, a soft obstacle on the left
- * approach, and a red target in the open at the bottom.
+ * The layout exercises the things a control loop has to cope with: an open floor to calibrate
+ * on, a walled pocket holding the green target (reachable, but only from below), an abyss
+ * running down the middle that a careless multi-cycle move will fall into, a soft obstacle on
+ * the left approach, and a red target in the open at the bottom.
  *
- * EVERY OPENING IS TWO CELLS WIDE, because the robot is two cells wide. The arena the 1×1 robot
- * drove had a one-cell pocket mouth and a one-cell rim around the walls; a 2×2 body cannot enter
- * either, so the green target would have been unreachable and "reachable, but only from below"
- * would have quietly become "not reachable at all" with every test still green. Widening the
- * pocket is what keeps the map's stated purposes true of the body that now drives it.
+ * At 5 cm a tile this is 70 x 60 cm, which is the size of the arena actually used with the real
+ * robot.
  *
- *      x: 0    1    2    3    4    5    6    7    8    9   10   11   12   13
- *  y=0    .    #    #    #    #    .    .    .    .    .    .    .    .    .
- *  y=1    .    #    g    g    #    .    .    .    .    .    .    .    .    .
- *  y=2    .    #    .    .    #    .    .    .    .    .    .    .    .    .
- *  y=3    .    #    .    .    #    .    .    .    .    .    .    .    .    .
- *  y=4    .    .    .    .    .    .    .    ~    ~    .    .    .    .    .
+ * EVERY OPENING IS SIZED AGAINST THE BODY'S DIAGONAL, not its width. A 10 cm body is 14.1 cm
+ * across its diagonal, so a body that can sit at an angle does NOT fit through the two-tile
+ * (10 cm) mouth that was enough when the robot was axis-aligned and 2x2 cells. The pocket mouth
+ * is therefore THREE tiles — 15 cm — which the diagonal clears. Narrow it again and the green
+ * target becomes unreachable at most headings while every test stays green, which is precisely
+ * how "reachable, but only from below" quietly stopped being true once before.
+ *
+ *      xTiles: 0    1    2    3    4    5    6    7    8    9   10   11   12   13
+ *  yTiles=0    .    #    #    #    #    #    .    .    .    .    .    .    .    .
+ *  yTiles=1    .    #    g    g    g    #    .    .    .    .    .    .    .    .
+ *  yTiles=2    .    #    .    .    .    #    .    .    .    .    .    .    .    .
+ *  yTiles=3    .    #    .    .    .    #    .    .    .    .    .    .    .    .
+ *  yTiles=4    .    .    .    .    .    .    .    ~    ~    .    .    .    .    .
  *  ...
  *
- * The pocket's mouth is the two-cell gap at x=2..3, y=4: the walls at x=1 and x=4 run from y=0
- * to y=3 and the roof at y=0 closes the top, so the only footprint that reaches the two green
- * cells is one that came up the mouth.
+ * The pocket's mouth is the three-tile gap at xTiles=2..4, yTiles=4: the walls at xTiles=1 and
+ * xTiles=5 run from yTiles=0 to yTiles=3 and the roof at yTiles=0 closes the top, so the only
+ * body that reaches the green tiles is one that came up the mouth.
  */
 export const PHASE_ONE_MAP: WorldMap = {
   id: 'phase-one-arena',
   rows: [
-    '.####.........',
-    '.#gg#.........',
-    '.#..#.........',
-    '.#..#.........',
+    '.#####........',
+    '.#ggg#........',
+    '.#...#........',
+    '.#...#........',
     '.......~~.....',
     '.......~~.....',
     '.......~~.....',
@@ -134,124 +172,493 @@ export const PHASE_ONE_MAP: WorldMap = {
     '.........##...',
     '....rr........',
   ],
-  start: { x: 4, y: 8, heading: 'north' },
+  tileSizeCm: DEFAULT_TILE_SIZE_CM,
+  start: { xTiles: 5, yTiles: 8, headingDeg: NORTH_DEG },
 }
 
-export function createWorld(map: WorldMap = PHASE_ONE_MAP): World {
-  if (map.rows.length === 0) throw new Error(`world "${map.id}": map has no rows`)
-  const width = map.rows[0].length
-  const cells = map.rows.map((row, y) => {
-    if (row.length !== width) {
-      throw new Error(
-        `world "${map.id}": row ${y} is ${row.length} cells wide, expected ${width} — a ragged map silently shifts every coordinate below it`,
-      )
-    }
-    return [...row].map((char, x) => {
-      const kind = CELL_LEGEND[char]
-      if (!kind) throw new Error(`world "${map.id}": unknown map character "${char}" at ${x},${y}`)
-      return kind
-    })
-  })
-  const world: World = { id: map.id, width, height: map.rows.length, cells, start: map.start }
-  // The WHOLE footprint is validated, not just the anchor cell. A 2×2 body whose anchor is on
-  // clear floor can still have a corner in a wall or over the edge, and a start like that puts
-  // the robot inside geometry it could never have driven into.
-  for (const [offsetX, offsetY] of FOOTPRINT_OFFSETS) {
-    const x = map.start.x + offsetX
-    const y = map.start.y + offsetY
-    const kind = cellAt(world, x, y)
-    if (kind === null || kind === 'hard' || kind === 'abyss') {
-      throw new Error(
-        `world "${map.id}": start ${map.start.x},${map.start.y} puts a ${FOOTPRINT_CELLS}x${FOOTPRINT_CELLS} footprint corner on ${x},${y}, which is ${kind ?? 'out of bounds'}`,
-      )
-    }
-  }
-  return world
-}
+// ---------------------------------------------------------------------------
+// Geometry. All of it in centimetres; the only tile arithmetic is the division
+// by `tileSizeCm` that turns a physical extent into the range of tiles it covers.
+// ---------------------------------------------------------------------------
 
-/** The cell at a coordinate, or `null` when the coordinate is off the grid. */
-export function cellAt(world: World, x: number, y: number): CellKind | null {
-  if (x < 0 || y < 0 || x >= world.width || y >= world.height) return null
-  return world.cells[y][x]
-}
-
-export interface RobotWorldState {
-  x: number
-  y: number
-  heading: Heading
-  /** Once true, the run is over: no further movement, and every response keeps saying so. */
-  destroyed: boolean
-}
-
-export function initialState(world: World): RobotWorldState {
-  return { x: world.start.x, y: world.start.y, heading: world.start.heading, destroyed: false }
+export interface PointCm {
+  xCm: number
+  yCm: number
 }
 
 /**
- * One cell of travel per heading. A diagonal moves BOTH axes by one — a king's step, not a
- * queen's slide, and not a knight's.
+ * How much two shapes must actually overlap before it counts, in centimetres.
  *
- * A diagonal step therefore leaves the destination footprint overlapping the source footprint in
- * exactly one cell, so the robot never squeezes between two diagonally-touching walls: those two
- * walls are themselves cells of the destination footprint and refuse it. That is why a plain
- * destination-footprint test is sufficient here and no separate corner-cutting rule is needed.
+ * Not a fudge factor: "any overlap blocks" is meaningless in floating point without a
+ * threshold, because a body driven flush against a wall touches it by a few times 1e-15 and
+ * would then be unable to move at all. A micrometre is far below anything the simulation
+ * models and far above the arithmetic's noise floor.
  */
-const DELTA: Readonly<Record<Heading, { dx: number; dy: number }>> = {
-  north: { dx: 0, dy: -1 },
-  northeast: { dx: 1, dy: -1 },
-  east: { dx: 1, dy: 0 },
-  southeast: { dx: 1, dy: 1 },
-  south: { dx: 0, dy: 1 },
-  southwest: { dx: -1, dy: 1 },
-  west: { dx: -1, dy: 0 },
-  northwest: { dx: -1, dy: -1 },
+export const OVERLAP_EPSILON_CM = 1e-4
+
+/** Degrees, normalised to [0, 360). */
+export function normaliseDegrees(degrees: number): number {
+  return ((degrees % 360) + 360) % 360
 }
 
-/** Rotate a heading by `turnSteps` of 45° (positive is clockwise), wrapping in both directions. */
-export function rotate(heading: Heading, turnSteps: number): Heading {
-  const from = HEADINGS.indexOf(heading)
-  const to = (((from + turnSteps) % HEADINGS.length) + HEADINGS.length) % HEADINGS.length
-  return HEADINGS[to]
+/**
+ * The unit vector the robot faces. North (0 degrees) is UP the map, and y grows downwards, so
+ * north is `(0, -1)` and the general form is `(sin, -cos)`.
+ */
+export function forwardVector(headingDeg: number): PointCm {
+  const radians = (headingDeg * Math.PI) / 180
+  return { xCm: Math.sin(radians), yCm: -Math.cos(radians) }
 }
 
-/** What a whole 2×2 footprint anchored at `x,y` would run into, worst case first. */
-type FootprintVerdict =
+/** The unit vector 90 degrees clockwise of `forwardVector` — the robot's right-hand side. */
+function rightVector(headingDeg: number): PointCm {
+  const radians = (headingDeg * Math.PI) / 180
+  return { xCm: Math.cos(radians), yCm: Math.sin(radians) }
+}
+
+/**
+ * The four corners of the body: a `widthCm` x `lengthCm` rectangle centred on `centre`, with
+ * `lengthCm` running along the heading and `widthCm` across it.
+ */
+export function bodyCorners(
+  body: RobotBodyProfile,
+  centre: PointCm,
+  headingDeg: number,
+): PointCm[] {
+  const forward = forwardVector(headingDeg)
+  const right = rightVector(headingDeg)
+  const halfLength = body.lengthCm / 2
+  const halfWidth = body.widthCm / 2
+  return [
+    [1, 1],
+    [1, -1],
+    [-1, -1],
+    [-1, 1],
+  ].map(([alongSign, acrossSign]) => ({
+    xCm: centre.xCm + forward.xCm * halfLength * alongSign + right.xCm * halfWidth * acrossSign,
+    yCm: centre.yCm + forward.yCm * halfLength * alongSign + right.yCm * halfWidth * acrossSign,
+  }))
+}
+
+/** Monotone-chain convex hull. Returns the hull in order; duplicate points are harmless. */
+function convexHull(points: readonly PointCm[]): PointCm[] {
+  if (points.length <= 2) return [...points]
+  const sorted = [...points].sort((a, b) => a.xCm - b.xCm || a.yCm - b.yCm)
+  const cross = (o: PointCm, a: PointCm, b: PointCm) =>
+    (a.xCm - o.xCm) * (b.yCm - o.yCm) - (a.yCm - o.yCm) * (b.xCm - o.xCm)
+
+  const build = (input: readonly PointCm[]) => {
+    const chain: PointCm[] = []
+    for (const point of input) {
+      while (chain.length >= 2 && cross(chain[chain.length - 2], chain[chain.length - 1], point) <= 0) {
+        chain.pop()
+      }
+      chain.push(point)
+    }
+    chain.pop()
+    return chain
+  }
+
+  return [...build(sorted), ...build([...sorted].reverse())]
+}
+
+/**
+ * The region the body passes THROUGH while translating from `from` to `to` at a fixed heading.
+ *
+ * A translated convex shape sweeps its own convex hull with the translated copy of itself, so
+ * this is the hull of the eight corners. Sweeping is the whole point (see `move`): a 1.5 cm
+ * stride is smaller than a 5 cm tile, which makes endpoint sampling look safe when it is not —
+ * the body is 10 cm across and its swept rectangle crosses tiles that neither endpoint touches.
+ */
+export function sweptBodyPolygon(
+  body: RobotBodyProfile,
+  from: PointCm,
+  to: PointCm,
+  headingDeg: number,
+): PointCm[] {
+  return convexHull([
+    ...bodyCorners(body, from, headingDeg),
+    ...bodyCorners(body, to, headingDeg),
+  ])
+}
+
+function projectionRange(points: readonly PointCm[], axis: PointCm): { min: number; max: number } {
+  let min = Infinity
+  let max = -Infinity
+  for (const point of points) {
+    const value = point.xCm * axis.xCm + point.yCm * axis.yCm
+    if (value < min) min = value
+    if (value > max) max = value
+  }
+  return { min, max }
+}
+
+/**
+ * Do a convex point set and an axis-aligned rectangle overlap by more than
+ * {@link OVERLAP_EPSILON_CM}? Separating-axis test.
+ *
+ * This measures AREA overlap and so is only meaningful for a shape that has area. A line segment
+ * has none — its projection onto its own normal is a single point, so the overlap on that axis is
+ * always zero and SAT would call every segment separate from every rectangle. The centre-path
+ * rule below therefore uses {@link segmentEntersRect} instead; do not "simplify" it back to this.
+ */
+function overlapsRect(
+  polygon: readonly PointCm[],
+  rect: { leftCm: number; topCm: number; rightCm: number; bottomCm: number },
+): boolean {
+  const rectCorners: PointCm[] = [
+    { xCm: rect.leftCm, yCm: rect.topCm },
+    { xCm: rect.rightCm, yCm: rect.topCm },
+    { xCm: rect.rightCm, yCm: rect.bottomCm },
+    { xCm: rect.leftCm, yCm: rect.bottomCm },
+  ]
+
+  const axes: PointCm[] = [
+    { xCm: 1, yCm: 0 },
+    { xCm: 0, yCm: 1 },
+  ]
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i]
+    const b = polygon[(i + 1) % polygon.length]
+    const edgeX = b.xCm - a.xCm
+    const edgeY = b.yCm - a.yCm
+    const length = Math.hypot(edgeX, edgeY)
+    if (length < OVERLAP_EPSILON_CM) continue
+    axes.push({ xCm: -edgeY / length, yCm: edgeX / length })
+  }
+
+  for (const axis of axes) {
+    const a = projectionRange(polygon, axis)
+    const b = projectionRange(rectCorners, axis)
+    const overlap = Math.min(a.max, b.max) - Math.max(a.min, b.min)
+    if (overlap <= OVERLAP_EPSILON_CM) return false
+  }
+  return true
+}
+
+/**
+ * Does a line segment reach the INTERIOR of an axis-aligned rectangle?
+ *
+ * Liang-Barsky clipping against the rectangle shrunk by {@link OVERLAP_EPSILON_CM}, so a segment
+ * that merely runs along a tile's boundary is outside it — the same "must actually overlap"
+ * convention the body test uses. A degenerate segment (`from` equal to `to`) is handled by the
+ * same arithmetic and answers "is this point strictly inside", which is what a stationary body's
+ * centre needs.
+ */
+function segmentEntersRect(
+  from: PointCm,
+  to: PointCm,
+  rect: { leftCm: number; topCm: number; rightCm: number; bottomCm: number },
+): boolean {
+  const leftCm = rect.leftCm + OVERLAP_EPSILON_CM
+  const rightCm = rect.rightCm - OVERLAP_EPSILON_CM
+  const topCm = rect.topCm + OVERLAP_EPSILON_CM
+  const bottomCm = rect.bottomCm - OVERLAP_EPSILON_CM
+  if (leftCm >= rightCm || topCm >= bottomCm) return false
+
+  let enter = 0
+  let leave = 1
+  const clip = (denominator: number, numerator: number): boolean => {
+    if (denominator === 0) return numerator >= 0
+    const crossing = numerator / denominator
+    if (denominator < 0) {
+      if (crossing > leave) return false
+      if (crossing > enter) enter = crossing
+    } else {
+      if (crossing < enter) return false
+      if (crossing < leave) leave = crossing
+    }
+    return true
+  }
+
+  const runCm = to.xCm - from.xCm
+  const riseCm = to.yCm - from.yCm
+  return (
+    clip(-runCm, from.xCm - leftCm) &&
+    clip(runCm, rightCm - from.xCm) &&
+    clip(-riseCm, from.yCm - topCm) &&
+    clip(riseCm, bottomCm - from.yCm)
+  )
+}
+
+/** The physical extent of one tile, in centimetres. */
+function tileRect(world: World, xTiles: number, yTiles: number) {
+  return {
+    leftCm: xTiles * world.tileSizeCm,
+    topCm: yTiles * world.tileSizeCm,
+    rightCm: (xTiles + 1) * world.tileSizeCm,
+    bottomCm: (yTiles + 1) * world.tileSizeCm,
+  }
+}
+
+function boundsOf(points: readonly PointCm[]) {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const point of points) {
+    if (point.xCm < minX) minX = point.xCm
+    if (point.yCm < minY) minY = point.yCm
+    if (point.xCm > maxX) maxX = point.xCm
+    if (point.yCm > maxY) maxY = point.yCm
+  }
+  return { minX, minY, maxX, maxY }
+}
+
+/** The tiles a shape's bounding box could possibly touch, clipped to the grid. */
+function candidateTiles(world: World, points: readonly PointCm[]) {
+  const bounds = boundsOf(points)
+  return {
+    fromX: Math.max(0, Math.floor((bounds.minX + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    toX: Math.min(world.widthTiles - 1, Math.floor((bounds.maxX - OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    fromY: Math.max(0, Math.floor((bounds.minY + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    toY: Math.min(world.heightTiles - 1, Math.floor((bounds.maxY - OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    bounds,
+  }
+}
+
+/** The tile at a tile coordinate, or `null` when the coordinate is off the grid. */
+export function tileAt(world: World, xTiles: number, yTiles: number): CellKind | null {
+  if (xTiles < 0 || yTiles < 0 || xTiles >= world.widthTiles || yTiles >= world.heightTiles) {
+    return null
+  }
+  return world.cells[yTiles][xTiles]
+}
+
+/** The tile a point in centimetres falls in, or `null` when the point is outside the world. */
+export function tileAtPoint(world: World, point: PointCm): CellKind | null {
+  return tileAt(
+    world,
+    Math.floor(point.xCm / world.tileSizeCm),
+    Math.floor(point.yCm / world.tileSizeCm),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Collision
+// ---------------------------------------------------------------------------
+
+/** What a swept body ran into, worst case first. Coordinates are the offending TILE. */
+export type CollisionVerdict =
   | { kind: 'clear' }
-  | { kind: 'blocked'; x: number; y: number; reason: 'edge' | 'obstacle' }
-  | { kind: 'fatal'; x: number; y: number }
-  | { kind: 'snag'; x: number; y: number }
+  | { kind: 'blocked'; xTiles: number; yTiles: number; reason: 'edge' | 'obstacle' }
+  | { kind: 'fatal'; xTiles: number; yTiles: number }
+  | { kind: 'snag'; xTiles: number; yTiles: number }
 
 /**
- * Judge a destination footprint as a whole.
+ * THE COLLISION RULE, in one named place so that it is one rule and it is testable on its own.
  *
- * Precedence is deliberate and is the thing a single-cell implementation cannot express: a wall
- * under ANY corner refuses the move outright, so a footprint straddling both a wall and an abyss
- * is blocked rather than fatal — the robot never gets to enter it. Below that, an abyss under any
- * corner is fatal, and a soft cell under any corner ends the move there.
+ * "Under any corner" meant something when the body covered exactly four cells; it means nothing
+ * once the body sits at an angle and overlaps tiles fractionally. So the rule is stated in terms
+ * of AREA OVERLAP, with the old precedence preserved:
+ *
+ *  - ANY overlap with a `hard` tile, or with anything outside the world, BLOCKS. Conservative on
+ *    purpose: keeping the robot out of walls entirely is worth more than modelling a scrape.
+ *  - The abyss is FATAL when the body's CENTRE crosses into it — not on a millimetre of
+ *    overhang. A wheel over the lip should not end the run, and a body 10 cm across would
+ *    otherwise die two tiles before it looked like it should.
+ *  - ANY overlap with a `soft` tile SNAGS: the body enters and the move ends there.
+ *
+ * Precedence is blocked > fatal > snag, and it is deliberate: a wall refuses the move outright,
+ * so a sweep that straddles both a wall and an abyss is blocked rather than fatal — the robot
+ * never gets to enter it. Getting that backwards kills a robot that never moved.
+ *
+ * `from`/`to` are body CENTRES; the shape tested is the whole swept body between them, and the
+ * abyss test is the centre's own path.
  */
-function probeFootprint(world: World, x: number, y: number): FootprintVerdict {
-  let fatal: { x: number; y: number } | null = null
-  let snag: { x: number; y: number } | null = null
+export function probeSweptBody(
+  world: World,
+  body: RobotBodyProfile,
+  from: PointCm,
+  to: PointCm,
+  headingDeg: number,
+): CollisionVerdict {
+  const polygon = sweptBodyPolygon(body, from, to, headingDeg)
+  const { fromX, toX, fromY, toY, bounds } = candidateTiles(world, polygon)
 
-  for (const [offsetX, offsetY] of FOOTPRINT_OFFSETS) {
-    const cellX = x + offsetX
-    const cellY = y + offsetY
-    const kind = cellAt(world, cellX, cellY)
-    if (kind === null) return { kind: 'blocked', x: cellX, y: cellY, reason: 'edge' }
-    if (kind === 'hard') return { kind: 'blocked', x: cellX, y: cellY, reason: 'obstacle' }
-    if (kind === 'abyss' && fatal === null) fatal = { x: cellX, y: cellY }
-    if (kind === 'soft' && snag === null) snag = { x: cellX, y: cellY }
+  // Outside the world is a hard block, exactly as a wall is. Reported as the tile just past the
+  // edge that the body reached into, so the message names a place rather than a bound.
+  if (bounds.minX < -OVERLAP_EPSILON_CM) {
+    return { kind: 'blocked', xTiles: -1, yTiles: Math.floor(from.yCm / world.tileSizeCm), reason: 'edge' }
+  }
+  if (bounds.minY < -OVERLAP_EPSILON_CM) {
+    return { kind: 'blocked', xTiles: Math.floor(from.xCm / world.tileSizeCm), yTiles: -1, reason: 'edge' }
+  }
+  if (bounds.maxX > world.widthCm + OVERLAP_EPSILON_CM) {
+    return {
+      kind: 'blocked',
+      xTiles: world.widthTiles,
+      yTiles: Math.floor(from.yCm / world.tileSizeCm),
+      reason: 'edge',
+    }
+  }
+  if (bounds.maxY > world.heightCm + OVERLAP_EPSILON_CM) {
+    return {
+      kind: 'blocked',
+      xTiles: Math.floor(from.xCm / world.tileSizeCm),
+      yTiles: world.heightTiles,
+      reason: 'edge',
+    }
   }
 
-  if (fatal !== null) return { kind: 'fatal', ...fatal }
+  let snag: { xTiles: number; yTiles: number } | null = null
+  for (let yTiles = fromY; yTiles <= toY; yTiles++) {
+    for (let xTiles = fromX; xTiles <= toX; xTiles++) {
+      const kind = world.cells[yTiles][xTiles]
+      if (kind !== 'hard' && kind !== 'soft') continue
+      if (!overlapsRect(polygon, tileRect(world, xTiles, yTiles))) continue
+      if (kind === 'hard') return { kind: 'blocked', xTiles, yTiles, reason: 'obstacle' }
+      if (snag === null) snag = { xTiles, yTiles }
+    }
+  }
+
+  // The abyss, judged on the centre's path only. A segment, not a rectangle: the centre is a
+  // point, and testing the segment rather than sampling its endpoints means no stride can ever
+  // step over a hole, however the tile size and the stride are later configured.
+  const centrePath: PointCm[] = [from, to]
+  const centreTiles = candidateTiles(world, centrePath)
+  for (let yTiles = centreTiles.fromY; yTiles <= centreTiles.toY; yTiles++) {
+    for (let xTiles = centreTiles.fromX; xTiles <= centreTiles.toX; xTiles++) {
+      if (world.cells[yTiles][xTiles] !== 'abyss') continue
+      if (segmentEntersRect(from, to, tileRect(world, xTiles, yTiles))) {
+        return { kind: 'fatal', xTiles, yTiles }
+      }
+    }
+  }
+
   if (snag !== null) return { kind: 'snag', ...snag }
   return { kind: 'clear' }
 }
 
+// ---------------------------------------------------------------------------
+// World construction
+// ---------------------------------------------------------------------------
+
+export function createWorld(
+  map: WorldMap = PHASE_ONE_MAP,
+  body: RobotBodyProfile = DEFAULT_ROBOT_PHYSICAL_PROFILE.body,
+): World {
+  if (map.rows.length === 0) throw new Error(`world "${map.id}": map has no rows`)
+  const widthTiles = map.rows[0].length
+  const tileSizeCm = map.tileSizeCm ?? DEFAULT_TILE_SIZE_CM
+  if (!(tileSizeCm > 0)) {
+    throw new Error(`world "${map.id}": tileSizeCm must be positive, got ${tileSizeCm}`)
+  }
+
+  const cells = map.rows.map((row, yTiles) => {
+    if (row.length !== widthTiles) {
+      throw new Error(
+        `world "${map.id}": row ${yTiles} is ${row.length} tiles wide, expected ${widthTiles} — a ragged map silently shifts every coordinate below it`,
+      )
+    }
+    return [...row].map((char, xTiles) => {
+      const kind = CELL_LEGEND[char]
+      if (!kind) {
+        throw new Error(`world "${map.id}": unknown map character "${char}" at ${xTiles},${yTiles}`)
+      }
+      return kind
+    })
+  })
+
+  const heightTiles = map.rows.length
+  const startCm = {
+    xCm: (map.start.xTiles + 0.5) * tileSizeCm,
+    yCm: (map.start.yTiles + 0.5) * tileSizeCm,
+    headingDeg: normaliseDegrees(map.start.headingDeg),
+  }
+  const world: World = {
+    id: map.id,
+    widthTiles,
+    heightTiles,
+    tileSizeCm,
+    widthCm: widthTiles * tileSizeCm,
+    heightCm: heightTiles * tileSizeCm,
+    cells,
+    start: map.start,
+    startCm,
+  }
+
+  // The WHOLE BODY is validated, not the centre tile. A body whose centre is on clear floor can
+  // still have a corner in a wall or over the edge, and a start like that puts the robot inside
+  // geometry it could never have driven into. A zero-length sweep is exactly the body itself.
+  const centre = { xCm: startCm.xCm, yCm: startCm.yCm }
+  const verdict = probeSweptBody(world, body, centre, centre, startCm.headingDeg)
+  if (verdict.kind === 'blocked') {
+    throw new Error(
+      `world "${map.id}": start tile ${map.start.xTiles},${map.start.yTiles} puts the ${body.widthCm}x${body.lengthCm} cm body on tile ${verdict.xTiles},${verdict.yTiles}, which is ${verdict.reason === 'edge' ? 'out of bounds' : 'hard'}`,
+    )
+  }
+  if (verdict.kind === 'fatal') {
+    throw new Error(
+      `world "${map.id}": start tile ${map.start.xTiles},${map.start.yTiles} puts the body centre on tile ${verdict.xTiles},${verdict.yTiles}, which is abyss`,
+    )
+  }
+  return world
+}
+
+// ---------------------------------------------------------------------------
+// State and the seeded random source
+// ---------------------------------------------------------------------------
+
+export interface RobotWorldState {
+  /** Body CENTRE, centimetres from the map's top-left corner. */
+  xCm: number
+  yCm: number
+  /** Degrees clockwise from north, in [0, 360). */
+  headingDeg: number
+  /** Once true, the run is over: no further movement, and every response keeps saying so. */
+  destroyed: boolean
+  /**
+   * The jitter source, carried in the state so the module stays pure and a run is reproducible
+   * from its starting seed. Every jittered cycle advances it, whether or not the cycle was
+   * allowed — a blocked cycle still asked the gait for a motion.
+   */
+  seed: number
+}
+
+/** The seed a run starts from when nobody chooses one. Any value works; this one is arbitrary. */
+export const DEFAULT_SEED = 0x51ac0de
+
+/** One draw from the seeded generator: a value in [0, 1) and the seed to carry forward. */
+export function nextRandom(seed: number): { value: number; seed: number } {
+  const next = (seed + 0x6d2b79f5) >>> 0
+  let x = next
+  x = Math.imul(x ^ (x >>> 15), x | 1)
+  x ^= x + Math.imul(x ^ (x >>> 7), x | 61)
+  return { value: ((x ^ (x >>> 14)) >>> 0) / 4294967296, seed: next }
+}
+
+/**
+ * One jittered magnitude, plus the advanced seed.
+ *
+ * The draw happens even when `jitterFraction` is 0, so that turning jitter off changes the
+ * numbers a run produces but not the STRUCTURE of the seed sequence. With `jitterFraction: 0`
+ * the factor is exactly 1 and motion is exact, which is what makes a scripted sequence
+ * reproducible to the digit.
+ */
+function jittered(nominal: number, jitterFraction: number, seed: number) {
+  const draw = nextRandom(seed)
+  return { value: nominal * (1 + (draw.value * 2 - 1) * jitterFraction), seed: draw.seed }
+}
+
+export function initialState(world: World, seed: number = DEFAULT_SEED): RobotWorldState {
+  return {
+    xCm: world.startCm.xCm,
+    yCm: world.startCm.yCm,
+    headingDeg: world.startCm.headingDeg,
+    destroyed: false,
+    seed,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Motion
+// ---------------------------------------------------------------------------
+
 export type MoveOutcome =
-  /** Every requested step was taken. */
+  /** Every requested cycle was taken. */
   | 'moved'
-  /** At least one step was refused by bounds or a hard obstacle; the robot is intact. */
+  /** At least one cycle was refused by bounds or a hard obstacle; the robot is intact. */
   | 'blocked'
   /** A soft obstacle was entered and ended the move early. */
   | 'partial'
@@ -262,86 +669,104 @@ export type MoveOutcome =
 
 export interface MoveResult {
   state: RobotWorldState
-  requestedSteps: number
-  stepsTaken: number
-  /** Steps refused by bounds or a hard obstacle. These are no-ops; the run continues. */
-  blockedSteps: number
+  requestedCycles: number
+  cyclesTaken: number
+  /** Cycles refused by bounds or a hard obstacle. These are no-ops; the run continues. */
+  blockedCycles: number
   outcome: MoveOutcome
-  /** A sentence for the model to read. The observation is the whole interface to the agent. */
+  /**
+   * A sentence for the model to read. The observation is the whole interface to the agent.
+   *
+   * IT REPORTS AT THE COMMAND LEVEL AND NEVER THE ACHIEVED DISTANCE, AND THAT IS DELIBERATE.
+   * With jitter on, the 1.5 cm asked for is not the 1.5 cm travelled, and it is tempting to
+   * report the true figure because the emulator knows it. Do not. A real robot has no odometry:
+   * it does not know how far it actually went, and living with that ignorance is the skill the
+   * simulated world exists to let a student practise. Ground truth stays available to the
+   * renderer and to the tests through `state`, which is where it belongs.
+   */
   detail: string
 }
 
 /**
- * Walk `steps` cells, ONE CELL AT A TIME.
+ * Walk `cycles` gait cycles, ONE CYCLE AT A TIME.
  *
- * The stepwise loop is the single most important thing in this module. A `?steps=5` into a wall
- * two cells away has to stop at the wall, and a path that crosses the abyss has to end on the
- * abyss cell rather than wherever the fifth step would have landed. Resolving the move as one
- * jump and then testing only the destination looks entirely plausible and gets both wrong.
+ * The per-cycle loop is the single most important thing in this module, and a smaller stride
+ * makes it MORE necessary rather than less. A `?steps=5` into a wall has to stop at the wall,
+ * and a path across the abyss has to end on the abyss. A 1.5 cm cycle is smaller than a 5 cm
+ * tile, which makes endpoint sampling look safe — it is not: the body is 10 cm across and its
+ * swept rectangle crosses tiles that neither endpoint touches. So each cycle tests the SWEPT
+ * BODY (see `probeSweptBody`), and:
  *
- * Per step, the destination FOOTPRINT is what is tested — all four cells, never just the anchor:
- *  - bounds or a hard obstacle under any corner → that step is a no-op and the run continues, so
- *    a model that keeps pushing forward gets a truthful "you did not move" rather than a silent
- *    failure;
- *  - an abyss under any corner → the robot is destroyed there and the loop stops;
- *  - a soft obstacle under any corner → the robot enters and the move stops there: a partial,
- *    recoverable move.
+ *  - blocked  -> the cycle is a truthful no-op and the run continues, so a model that keeps
+ *                pushing forward is told "you did not move" rather than failing silently;
+ *  - fatal    -> the body moves there and the run is over;
+ *  - snag     -> the body moves there and the move stops: partial, recoverable.
  */
 export function move(
   world: World,
+  profile: RobotPhysicalProfile,
   state: RobotWorldState,
   direction: 'forward' | 'backward',
-  steps: number,
+  cycles: number,
 ): MoveResult {
-  if (state.destroyed) return runOverResult(state, steps)
+  if (state.destroyed) return runOverResult(state, cycles)
 
+  const nominalCm =
+    direction === 'forward'
+      ? profile.motion.forwardPerCycleCm
+      : profile.motion.backwardPerCycleCm
   const sign = direction === 'forward' ? 1 : -1
-  const { dx, dy } = DELTA[state.heading]
-  let { x, y } = state
-  let stepsTaken = 0
-  let blockedSteps = 0
+  const forward = forwardVector(state.headingDeg)
+
+  let xCm = state.xCm
+  let yCm = state.yCm
+  let seed = state.seed
+  let cyclesTaken = 0
+  let blockedCycles = 0
   let outcome: MoveOutcome = 'moved'
   let destroyed = false
-  let detail = `Moved ${direction} ${steps} cell(s).`
+  let detail = `Moved ${direction} ${cycles} cycle(s) of about ${nominalCm} cm each.`
 
-  for (let i = 0; i < steps; i++) {
-    const nextX = x + dx * sign
-    const nextY = y + dy * sign
-    const verdict = probeFootprint(world, nextX, nextY)
+  for (let cycle = 0; cycle < cycles; cycle++) {
+    const step = jittered(nominalCm, profile.motion.jitterFraction, seed)
+    seed = step.seed
+    const travelCm = step.value * sign
+    const to = { xCm: xCm + forward.xCm * travelCm, yCm: yCm + forward.yCm * travelCm }
+    const verdict = probeSweptBody(world, profile.body, { xCm, yCm }, to, state.headingDeg)
 
     if (verdict.kind === 'blocked') {
-      blockedSteps++
+      blockedCycles++
       outcome = 'blocked'
       detail =
         verdict.reason === 'edge'
-          ? `Blocked by the edge of the world at ${verdict.x},${verdict.y}. Moved ${stepsTaken} of ${steps} cell(s).`
-          : `Blocked by an obstacle at ${verdict.x},${verdict.y}. Moved ${stepsTaken} of ${steps} cell(s).`
+          ? `Blocked by the edge of the world at tile ${verdict.xTiles},${verdict.yTiles}. Moved ${cyclesTaken} of ${cycles} cycle(s).`
+          : `Blocked by an obstacle at tile ${verdict.xTiles},${verdict.yTiles}. Moved ${cyclesTaken} of ${cycles} cycle(s).`
       continue
     }
 
-    x = nextX
-    y = nextY
-    stepsTaken++
+    xCm = to.xCm
+    yCm = to.yCm
+    cyclesTaken++
 
     if (verdict.kind === 'fatal') {
       destroyed = true
       outcome = 'destroyed'
-      detail = `Fell into the abyss at ${verdict.x},${verdict.y} after ${stepsTaken} of ${steps} cell(s). The robot is destroyed and the run is over.`
+      detail = `Fell into the abyss at tile ${verdict.xTiles},${verdict.yTiles} after ${cyclesTaken} of ${cycles} cycle(s). The robot is destroyed and the run is over.`
       break
     }
 
     if (verdict.kind === 'snag') {
       outcome = 'partial'
-      detail = `Snagged on a soft obstacle at ${verdict.x},${verdict.y}; the move stopped there after ${stepsTaken} of ${steps} cell(s).`
+      detail = `Snagged on a soft obstacle at tile ${verdict.xTiles},${verdict.yTiles}; the move stopped there after ${cyclesTaken} of ${cycles} cycle(s).`
       break
     }
   }
 
   return {
-    state: { x, y, heading: state.heading, destroyed },
-    requestedSteps: steps,
-    stepsTaken,
-    blockedSteps,
+    state: { xCm, yCm, headingDeg: state.headingDeg, destroyed, seed },
+    requestedCycles: cycles,
+    cyclesTaken,
+    blockedCycles,
     outcome,
     detail,
   }
@@ -350,27 +775,42 @@ export function move(
 /**
  * Turning is always possible while the robot is alive, and never moves it.
  *
- * The `detail` string is the whole interface to the agent — the observation is what the model
- * reasons from — so it states the arithmetic the model has to do: how many 45° steps, and how
- * many degrees that adds up to. It must never say "quarter-turn": one step has not been 90°
- * since the robot gained eight headings, and a model told otherwise will over-rotate by double.
+ * There is deliberately NO collision test on a turn. The real robot has no idea what is beside
+ * it and will happily grind its shell along a wall while its feet shuffle in place; refusing the
+ * command would teach an agent that a failed turn means an obstacle, which is a signal the
+ * hardware does not give. What a turn costs is the same as on the bench: a servo cycle and some
+ * heading error.
+ *
+ * The `detail` string is the whole interface to the agent, so it states the arithmetic the model
+ * has to do: how many cycles, and how many degrees that adds up to at the profile's turn size.
+ * It reports the NOMINAL angle, never the jittered one — see `MoveResult.detail`.
  */
 export function turn(
+  profile: RobotPhysicalProfile,
   state: RobotWorldState,
   direction: 'left' | 'right',
-  steps: number,
+  cycles: number,
 ): MoveResult {
-  if (state.destroyed) return runOverResult(state, steps)
+  if (state.destroyed) return runOverResult(state, cycles)
 
-  const heading = rotate(state.heading, direction === 'right' ? steps : -steps)
-  const degrees = steps * DEGREES_PER_TURN_STEP
+  const perCycleDeg = profile.motion.turnDegreesPerCycle
+  const sign = direction === 'right' ? 1 : -1
+  let headingDeg = state.headingDeg
+  let seed = state.seed
+  for (let cycle = 0; cycle < cycles; cycle++) {
+    const step = jittered(perCycleDeg, profile.motion.jitterFraction, seed)
+    seed = step.seed
+    headingDeg = normaliseDegrees(headingDeg + step.value * sign)
+  }
+
+  const nominalTotalDeg = cycles * perCycleDeg
   return {
-    state: { ...state, heading },
-    requestedSteps: steps,
-    stepsTaken: steps,
-    blockedSteps: 0,
+    state: { ...state, headingDeg, seed },
+    requestedCycles: cycles,
+    cyclesTaken: cycles,
+    blockedCycles: 0,
     outcome: 'moved',
-    detail: `Turned ${direction} ${steps} step(s) of ${DEGREES_PER_TURN_STEP} degrees, which is ${degrees} degrees in total; now facing ${heading}.`,
+    detail: `Turned ${direction} ${cycles} cycle(s) of ${perCycleDeg} degrees, which is about ${nominalTotalDeg} degrees in total.`,
   }
 }
 
@@ -381,82 +821,89 @@ export function turn(
  * observation goes back to the model and the model responds by calling its completion tool to
  * declare failure — the same tool it uses for success.
  */
-export function runOverResult(state: RobotWorldState, steps: number): MoveResult {
+export function runOverResult(state: RobotWorldState, cycles: number): MoveResult {
   return {
     state,
-    requestedSteps: steps,
-    stepsTaken: 0,
-    blockedSteps: 0,
+    requestedCycles: cycles,
+    cyclesTaken: 0,
+    blockedCycles: 0,
     outcome: 'run_over',
-    detail: `The robot was destroyed at ${state.x},${state.y}. The run is over and it cannot move.`,
+    detail: `The robot was destroyed and the run is over. It cannot move.`,
   }
 }
 
-/** Cells the ultrasonic scans before it gives up, which sets the maximum reportable range. */
-export const MAX_SCAN_CELLS = 8
-/** How many centimetres one cell is worth on the scale the stub's fake reading used. */
-export const CM_PER_CELL = 25
-/** The firmware never reports below this, so neither does the emulator. */
-export const MIN_DISTANCE_CM = 2
+// ---------------------------------------------------------------------------
+// The distance sensor
+// ---------------------------------------------------------------------------
 
 /**
- * The footprint cells that have open world in front of them — the robot's leading face.
+ * Distance to the first thing that echoes ahead, in centimetres.
  *
- * A cell is on the leading face when the cell one step along the heading is NOT part of the same
- * footprint. For a cardinal heading that is the two cells of the front edge; for a diagonal it is
- * the three cells of the leading corner's L. Defining it this way rather than by a per-heading
- * table means no ray ever starts by passing through the robot's own body, which is the property
- * that actually has to hold.
+ * THE ARITHMETIC HERE IS DISTANCES, NOT TILE COUNTS, AND THERE IS NO CONVERSION HELPER. Every
+ * number the sensor uses comes from the robot's own profile: its minimum range (the bumper — the
+ * robot physically cannot report closer), its maximum range, and nothing else. The tile size is
+ * the map's business and the sensor never asks for it; changing the map's scale must not change
+ * what this sensor can see. A conversion at the edges is exactly where a tile-denominated length
+ * survives a refactor like this one, so there isn't one.
+ *
+ * CAST ORIGIN: the sensor sits at the CENTRE OF THE LEADING FACE of the chassis, which is where
+ * a forward-facing ultrasonic actually sits, and with a continuous pose that is a real point
+ * rather than something to discretise. ONE ray, from that point, along the heading. This is
+ * narrower than the old lattice model, which took the minimum over rays from each front cell and
+ * so warned about walls beside the body's path; a real HC-SR04 does no such thing. That is the
+ * whole basis of the aiming procedure in `system-prompt.md` — sweep a cycle at a time and take
+ * the smallest reading — and `profile.sensor.beamAngleDegrees` is the characteristic a
+ * cone-aware cast should later read rather than reinvent.
+ *
+ * An abyss is TRANSPARENT here, and that is a modelling choice worth knowing about: a hole in
+ * the floor reflects nothing back to a forward-facing ultrasonic, so the sensor cannot warn
+ * about the fatal terrain. A soft obstacle stands up and echoes, so it blocks the beam even
+ * though it can be driven into.
  */
-function leadingCells(state: RobotWorldState): Array<{ x: number; y: number }> {
-  const { dx, dy } = DELTA[state.heading]
-  const inFootprint = (offsetX: number, offsetY: number) =>
-    offsetX >= 0 && offsetX < FOOTPRINT_CELLS && offsetY >= 0 && offsetY < FOOTPRINT_CELLS
-  return FOOTPRINT_OFFSETS.filter(
-    ([offsetX, offsetY]) => !inFootprint(offsetX + dx, offsetY + dy),
-  ).map(([offsetX, offsetY]) => ({ x: state.x + offsetX, y: state.y + offsetY }))
-}
+export function distanceCm(
+  world: World,
+  profile: RobotPhysicalProfile,
+  state: RobotWorldState,
+): number {
+  const forward = forwardVector(state.headingDeg)
+  const originXCm = state.xCm + forward.xCm * (profile.body.lengthCm / 2)
+  const originYCm = state.yCm + forward.yCm * (profile.body.lengthCm / 2)
+  const clamp = (distance: number) =>
+    Math.min(profile.sensor.maxRangeCm, Math.max(profile.sensor.minRangeCm, distance))
 
-/** Clear cells between one leading cell and the first thing that echoes, capped at the scan range. */
-function clearCellsAhead(world: World, from: { x: number; y: number }, heading: Heading): number {
-  const { dx, dy } = DELTA[heading]
-  let x = from.x
-  let y = from.y
-  let free = 0
+  // Amanatides & Woo: walk the tiles the ray crosses in order, so the returned distance is the
+  // exact distance to the face of the first tile that echoes — never a multiple of anything.
+  const tileSizeCm = world.tileSizeCm
+  let xTiles = Math.floor(originXCm / tileSizeCm)
+  let yTiles = Math.floor(originYCm / tileSizeCm)
+  const stepX = forward.xCm > 0 ? 1 : forward.xCm < 0 ? -1 : 0
+  const stepY = forward.yCm > 0 ? 1 : forward.yCm < 0 ? -1 : 0
+  const nextBoundary = (position: number, tile: number, step: number) =>
+    step > 0 ? (tile + 1) * tileSizeCm - position : position - tile * tileSizeCm
+  let travelToNextX =
+    stepX === 0 ? Infinity : nextBoundary(originXCm, xTiles, stepX) / Math.abs(forward.xCm)
+  let travelToNextY =
+    stepY === 0 ? Infinity : nextBoundary(originYCm, yTiles, stepY) / Math.abs(forward.yCm)
+  const travelPerTileX = stepX === 0 ? Infinity : tileSizeCm / Math.abs(forward.xCm)
+  const travelPerTileY = stepY === 0 ? Infinity : tileSizeCm / Math.abs(forward.yCm)
 
-  while (free < MAX_SCAN_CELLS) {
-    x += dx
-    y += dy
-    const kind = cellAt(world, x, y)
-    if (kind === null || kind === 'hard' || kind === 'soft') break
-    free++
+  let travelledCm = 0
+  // The ray can cross at most one tile per grid line in each axis before it leaves the world.
+  const maxCrossings = world.widthTiles + world.heightTiles + 2
+  for (let crossing = 0; crossing <= maxCrossings; crossing++) {
+    const kind = tileAt(world, xTiles, yTiles)
+    // Off the grid, or something solid: either way the beam ends here.
+    if (kind === null || kind === 'hard' || kind === 'soft') return clamp(travelledCm)
+    if (travelToNextX < travelToNextY) {
+      travelledCm = travelToNextX
+      xTiles += stepX
+      travelToNextX += travelPerTileX
+    } else {
+      travelledCm = travelToNextY
+      yTiles += stepY
+      travelToNextY += travelPerTileY
+    }
+    if (travelledCm >= profile.sensor.maxRangeCm) return profile.sensor.maxRangeCm
   }
-
-  return free
-}
-
-/**
- * Distance to the first blocking cell ahead, on the same centimetre-ish scale the stub faked,
- * so the ultrasonic tool keeps meaning what it meant.
- *
- * CAST ORIGIN — the choice this needed once the body stopped being a single cell. The sensor is
- * modelled as sitting at the CENTRE OF THE LEADING EDGE of the 2×2 chassis, which is where a
- * forward-facing ultrasonic actually sits. That centre is a lattice point, not a cell: on a
- * cardinal heading the beam runs exactly along the boundary between the two front cells' columns
- * (or rows), grazing both. The faithful discretisation of a ray that grazes two cells is to take
- * whichever returns first, so the reading is the MINIMUM over rays cast from each cell of the
- * leading face. A single arbitrarily-chosen front corner would have been the alternative, and it
- * is the wrong one: it reports open ground while the other half of a two-cell-wide body drives
- * into a wall.
- *
- * An abyss is transparent here, and that is a modelling choice worth knowing about: a downward
- * hole reflects nothing back to a forward-facing ultrasonic, so the sensor cannot warn about it.
- * A soft obstacle is solid enough to echo, so it blocks the beam even though it can be driven
- * into.
- */
-export function distanceCm(world: World, state: RobotWorldState): number {
-  const free = Math.min(
-    ...leadingCells(state).map((cell) => clearCellsAhead(world, cell, state.heading)),
-  )
-  return Math.max(MIN_DISTANCE_CM, free * CM_PER_CELL)
+  return profile.sensor.maxRangeCm
 }

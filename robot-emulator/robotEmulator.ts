@@ -5,8 +5,13 @@ import {
   clampSteps,
   corsMiddleware,
 } from '../robot-protocol/robotProtocol.js'
+import {
+  getPhysicalProfile,
+  type RobotPhysicalProfile,
+} from '../src/agent/robotPresets/index.js'
 import { renderJpeg } from './render.js'
 import {
+  DEFAULT_SEED,
   createWorld,
   distanceCm,
   initialState,
@@ -35,11 +40,21 @@ import {
  * On death there is deliberately no hidden field that yanks the control loop. The observation
  * says the robot is destroyed and the run is over; the model reads that and calls its completion
  * tool to declare failure, which is the same tool it calls on success.
+ *
+ * THE HARDWARE THE EMULATOR SIMULATES COMES FROM THE ROBOT PRESET, and from nowhere else. Body
+ * size, stride, turn angle, jitter and the sensor's range are read out of
+ * `src/agent/robotPresets/` at construction, so the robot the student drives here and the robot
+ * the prompt describes are the same robot by construction rather than by two people remembering
+ * to edit two files.
  */
 
 export interface EmulatorState {
   world: World
+  /** The simulated hardware, resolved from the active preset. */
+  profile: RobotPhysicalProfile
   robot: RobotWorldState
+  /** The seed a run restarts from, so `/reset` gives back the same run rather than a new one. */
+  initialSeed: number
   lastCommand: string | null
   lastSteps: number | null
   lastCommandAtMs: number | null
@@ -50,11 +65,25 @@ export interface EmulatorState {
   commandHistory: Array<{ name: string; steps: number; timestamp: number }>
 }
 
-export function createEmulatorState(map?: WorldMap): EmulatorState {
-  const world = createWorld(map)
+export interface EmulatorOptions {
+  map?: WorldMap
+  /** Which robot to simulate. Defaults to the registry's default preset. */
+  presetId?: string
+  /** Overrides the resolved preset outright — the seam the tests drive a different robot through. */
+  profile?: RobotPhysicalProfile
+  /** The jitter seed. The same seed replays the same run, which is what makes a run assertable. */
+  seed?: number
+}
+
+export function createEmulatorState(options: EmulatorOptions = {}): EmulatorState {
+  const profile = options.profile ?? getPhysicalProfile(options.presetId)
+  const world = createWorld(options.map, profile.body)
+  const initialSeed = options.seed ?? DEFAULT_SEED
   return {
     world,
-    robot: initialState(world),
+    profile,
+    initialSeed,
+    robot: initialState(world, initialSeed),
     lastCommand: null,
     lastSteps: null,
     lastCommandAtMs: null,
@@ -68,7 +97,7 @@ export function createEmulatorState(map?: WorldMap): EmulatorState {
 
 /** Restore a run to its starting conditions without bouncing the process. */
 export function resetEmulatorState(state: EmulatorState): void {
-  state.robot = initialState(state.world)
+  state.robot = initialState(state.world, state.initialSeed)
   state.lastCommand = null
   state.lastSteps = null
   state.lastCommandAtMs = null
@@ -86,12 +115,20 @@ function recordCommand(state: EmulatorState, name: string, steps: number) {
   state.commandHistory.push({ name, steps, timestamp: Date.now() })
 }
 
-/** The spatial fields every JSON response carries, so the run's status is never only implied. */
+/**
+ * The spatial fields every JSON response carries, so the run's status is never only implied.
+ *
+ * POSITION IS CENTIMETRES AND HEADING IS DEGREES, both named so. They stopped being integer
+ * cells and one of eight compass names when the motion model became continuous, and every
+ * consumer of `/status` follows that. `tileSizeCm` rides along because a reader that wants to
+ * relate a position back to the authored map needs the one number that bridges the two units.
+ */
 function situation(state: EmulatorState) {
   return {
-    x: state.robot.x,
-    y: state.robot.y,
-    heading: state.robot.heading,
+    xCm: state.robot.xCm,
+    yCm: state.robot.yCm,
+    headingDeg: state.robot.headingDeg,
+    tileSizeCm: state.world.tileSizeCm,
     destroyed: state.robot.destroyed,
     runOver: state.robot.destroyed,
     world: state.world.id,
@@ -104,11 +141,13 @@ function applyResult(state: EmulatorState, result: MoveResult) {
   state.lastDetail = result.detail
 }
 
-export function createRobotEmulatorApp(options: { map?: WorldMap; state?: EmulatorState } = {}): {
+export function createRobotEmulatorApp(
+  options: EmulatorOptions & { state?: EmulatorState } = {},
+): {
   app: Express
   state: EmulatorState
 } {
-  const state = options.state ?? createEmulatorState(options.map)
+  const state = options.state ?? createEmulatorState(options)
   const app = express()
 
   app.use(corsMiddleware)
@@ -131,7 +170,7 @@ export function createRobotEmulatorApp(options: { map?: WorldMap; state?: Emulat
   })
 
   app.get('/distance', (_req, res) => {
-    const distance = distanceCm(state.world, state.robot)
+    const distance = distanceCm(state.world, state.profile, state.robot)
     state.lastDistanceCm = distance
     // The firmware answers /distance with a bare number, so this one stays text/plain rather
     // than growing a body the real robot would never send. The run-over fact rides along as a
@@ -148,17 +187,17 @@ export function createRobotEmulatorApp(options: { map?: WorldMap; state?: Emulat
 
       let result: MoveResult
       if (name === 'forward' || name === 'backward') {
-        result = move(state.world, state.robot, name, steps)
+        result = move(state.world, state.profile, state.robot, name, steps)
       } else {
-        result = turn(state.robot, name === 'turn_left' ? 'left' : 'right', steps)
+        result = turn(state.profile, state.robot, name === 'turn_left' ? 'left' : 'right', steps)
       }
       applyResult(state, result)
 
       res.json({
         action: name,
         steps,
-        stepsTaken: result.stepsTaken,
-        blockedSteps: result.blockedSteps,
+        cyclesTaken: result.cyclesTaken,
+        blockedCycles: result.blockedCycles,
         outcome: result.outcome,
         detail: result.detail,
         ...situation(state),
@@ -190,7 +229,7 @@ export function createRobotEmulatorApp(options: { map?: WorldMap; state?: Emulat
   }
 
   app.get('/capture', (_req, res) => {
-    const jpeg = renderJpeg(state.world, state.robot)
+    const jpeg = renderJpeg(state.world, state.profile, state.robot)
     res.setHeader('Content-Type', 'image/jpeg')
     res.setHeader('Content-Length', String(jpeg.length))
     res.setHeader('Cache-Control', 'no-store')

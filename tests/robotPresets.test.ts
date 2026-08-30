@@ -3,8 +3,10 @@ import {
   ACEBOTT_QD021_PRESET,
   DEFAULT_ROBOT_PRESET_ID,
   getClientToolDefs,
+  getPhysicalProfile,
   getRobotPreset,
   listPresets,
+  resolvePhysicalProfile,
 } from '../src/agent/robotPresets/index.js'
 import { createRobotTools } from '../src/agent/robotTools.js'
 
@@ -265,5 +267,79 @@ describe('getClientToolDefs — what the browser client (App.vue) derives its to
     expect(serverDescription).toBe(
       'Number of cycles to run. Defaults to 1; capped at 10 by the firmware. Calibration: 1 forward/backward cycle ≈ 1.5 cm; 6 turn cycles ≈ 90° (~15° per turn cycle).'
     )
+  })
+})
+
+/**
+ * RC-51 — the hardware a preset describes.
+ *
+ * EVERY EXPECTED VALUE BELOW IS A LITERAL WRITTEN OUT HERE, never read back from the module. The
+ * numbers are measurements of the physical ACEBOTT QD021: the same 1.5 cm forward cycle and 15
+ * degree turn cycle the tool descriptions above have always told the model about, the 3 cm
+ * bumper and the beam cone `system-prompt.md` describes, and the measured 10 cm chassis. A test
+ * that imported DEFAULT_ROBOT_PHYSICAL_PROFILE and compared it to itself would agree with any
+ * edit at all, including one that quietly changed what the simulated robot is.
+ */
+describe('the physical robot behind a preset', () => {
+  it('gives a preset that states nothing the measured QD021 defaults', () => {
+    // The QD021 preset deliberately carries no `physical` block, because the defaults ARE its
+    // measurements — so this asserts both the defaults and that omitting the block works.
+    expect(ACEBOTT_QD021_PRESET.physical).toBeUndefined()
+
+    const profile = getPhysicalProfile()
+    expect(profile.body).toEqual({ widthCm: 10, lengthCm: 10 })
+    expect(profile.motion).toEqual({
+      forwardPerCycleCm: 1.5,
+      backwardPerCycleCm: 1.3,
+      turnDegreesPerCycle: 15,
+      jitterFraction: 0.015,
+    })
+    expect(profile.sensor).toEqual({ minRangeCm: 3, maxRangeCm: 400, beamAngleDegrees: 15 })
+  })
+
+  it('agrees with the calibration the tool descriptions state to the model', () => {
+    // The one place the two worlds could silently diverge: the prompt says 1.5 cm and 15 degrees
+    // a cycle, so the simulated robot must move 1.5 cm and turn 15 degrees a cycle. This is the
+    // whole reason the numbers live on the preset rather than in the emulator.
+    const profile = getPhysicalProfile()
+    const description = getRobotPreset().tools.find((tool) => tool.name === 'move_forward')!
+      .description
+    expect(description).toContain(`${profile.motion.forwardPerCycleCm} cm per cycle`)
+    const turnDescription = getRobotPreset().tools.find((tool) => tool.name === 'turn_left')!
+      .description
+    expect(turnDescription).toContain(`${profile.motion.turnDegreesPerCycle}\u00b0 per cycle`)
+  })
+
+  it('lets a preset override any subset and keeps the defaults for the rest', () => {
+    const partial = resolvePhysicalProfile({
+      body: { widthCm: 24 },
+      sensor: { maxRangeCm: 60 },
+    })
+    expect(partial.body).toEqual({ widthCm: 24, lengthCm: 10 })
+    expect(partial.sensor).toEqual({ minRangeCm: 3, maxRangeCm: 60, beamAngleDegrees: 15 })
+    expect(partial.motion.forwardPerCycleCm).toBe(1.5)
+  })
+
+  it('hands back a fresh object, so a caller cannot mutate the shared defaults', () => {
+    const first = resolvePhysicalProfile()
+    first.motion.forwardPerCycleCm = 99
+    expect(resolvePhysicalProfile().motion.forwardPerCycleCm).toBe(1.5)
+    expect(getPhysicalProfile().motion.forwardPerCycleCm).toBe(1.5)
+  })
+
+  it('states every length in centimetres and every angle in degrees, in the field names', () => {
+    // The unit invariant, asserted structurally: a field whose name does not say its unit is how
+    // a tile-denominated number survives into a centimetre-denominated model.
+    const profile = getPhysicalProfile()
+    const names = [
+      ...Object.keys(profile.body),
+      ...Object.keys(profile.motion),
+      ...Object.keys(profile.sensor),
+    ]
+    for (const name of names) {
+      expect(name, `${name} should name its unit`).toMatch(
+        /(Cm|Degrees|Fraction)(PerCycle)?$/
+      )
+    }
   })
 })

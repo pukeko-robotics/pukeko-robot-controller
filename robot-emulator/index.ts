@@ -12,16 +12,25 @@ const { app, state } = createRobotEmulatorApp()
 
 const server = app.listen(port, () => {
   console.log(`Robot emulator running on http://localhost:${port}`)
-  console.log(`World: ${state.world.id} (${state.world.width} x ${state.world.height} cells)`)
+  console.log(
+    `World: ${state.world.id} (${state.world.widthTiles} x ${state.world.heightTiles} tiles of ` +
+      `${state.world.tileSizeCm} cm = ${state.world.widthCm} x ${state.world.heightCm} cm)`,
+  )
+  console.log(
+    `Robot: ${state.profile.body.widthCm} x ${state.profile.body.lengthCm} cm, ` +
+      `${state.profile.motion.forwardPerCycleCm} cm forward and ` +
+      `${state.profile.motion.turnDegreesPerCycle} degrees per cycle, ` +
+      `${state.profile.motion.jitterFraction * 100}% jitter (seed ${state.initialSeed})`,
+  )
   console.log('Endpoints:')
-  console.log(`  GET /forward[?steps=N]       - Walk forward one cell at a time (default 1, max 10)`)
+  console.log(`  GET /forward[?steps=N]       - Walk forward one gait cycle at a time (1-10)`)
   console.log(`  GET /backward[?steps=N]      - Walk backward`)
   console.log(`  GET /turn_left[?steps=N]     - Rotate left in place`)
   console.log(`  GET /turn_right[?steps=N]    - Rotate right in place`)
-  console.log(`  GET /distance                - Range to the first blocking cell ahead, in cm`)
+  console.log(`  GET /distance                - Range to the first thing that echoes ahead, in cm`)
   console.log(`  GET /status                  - JSON heartbeat, including position and heading`)
   console.log(`  GET /capture                 - Overhead view of the world as image/jpeg`)
-  console.log(`  POST /reset                  - Restart the run from the map's start cell`)
+  console.log(`  POST /reset                  - Restart the run from the map's start pose`)
 })
 
 process.on('SIGTERM', () => {

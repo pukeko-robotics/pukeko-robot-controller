@@ -3,19 +3,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import jpegJs from 'jpeg-js'
 import { PNG } from 'pngjs'
-import {
-  DEGREES_PER_TURN_STEP,
-  FOOTPRINT_CELLS,
-  HEADINGS,
-  cellAt,
-  type CellKind,
-  type Heading,
-  type RobotWorldState,
-  type World,
-} from './world.js'
+import type { RobotPhysicalProfile } from '../src/agent/robotPresets/physical.js'
+import { tileAt, type CellKind, type RobotWorldState, type World } from './world.js'
 
 /**
- * Renders the grid world to a JPEG, as seen by an external camera looking straight down.
+ * Renders the world to a JPEG, as seen by an external camera looking straight down.
  *
  * ONE VIEWPOINT SHIPS, AND IT IS NOT THE ONE THE HARDWARE HAS. This is a 3rd-person overhead
  * view. The real robot carries a forward-facing onboard camera and sees a low, oblique, partial
@@ -35,18 +27,35 @@ import {
  * exactly that question. Do not replace it with a shape, and do not paint anything on top of it:
  * an overlay across the body destroys the recognisability it is here to buy.
  *
+ * UNITS: the terrain is drawn per TILE, because that is how a map is authored, and the robot is
+ * drawn from CENTIMETRES, because that is what its pose and its body are measured in. The bridge
+ * is `pxPerCm` — one number, computed in one place from the tile's own size. The robot's drawn
+ * size is therefore derived from its body and the map's scale; it is never a count of tiles.
+ *
  * Drawing stays pure JS — flat rectangles plus one alpha blit, decoded by `pngjs` and encoded by
  * `jpeg-js`, with no Canvas2D, no native binaries and no postinstall build step.
  */
 
-/** Pixels per world cell. Large enough that the photographed chassis is legible when scaled. */
-export const CELL_PX = 32
-
-/** The robot's drawn size: its 2×2-cell footprint, in pixels. */
-export const SPRITE_PX = CELL_PX * FOOTPRINT_CELLS
+/** Pixels per map TILE. Large enough that the photographed chassis is legible when scaled. */
+export const TILE_PX = 32
 
 /**
- * The terrain palette. The robot is not in here any more — it is a photograph, not a colour.
+ * How many pre-rotated copies of the photograph are kept, spread evenly around the circle.
+ *
+ * The pose is continuous now, so no fixed set of orientations can be exact; the question is only
+ * where to stop. 24 is the answer because it is the TURN CYCLE: 360/24 is 15 degrees, so a robot
+ * that has only ever been turned lands on an exact sprite every time, and a robot carrying
+ * accumulated jitter is drawn at most 7.5 degrees out. That error is a drawing artifact and
+ * nothing more — the pose, the collision test and the sensor all use the exact `headingDeg`, so
+ * raising this number improves the picture and changes no behaviour.
+ *
+ * Keeping a frame a single blit is the reason for pre-rotating at all: rotating the photograph
+ * per frame would put a supersampled resample in the request path of every `/capture`.
+ */
+export const SPRITE_ORIENTATIONS = 24
+
+/**
+ * The terrain palette. The robot is not in here — it is a photograph, not a colour.
  *
  * `soft` is the one colour the world's vocabulary did not dictate. It is a mid grey, chosen to
  * be plainly distinct from both the white floor and the purple hard obstacle, because the
@@ -100,37 +109,45 @@ function fillRect(
 /**
  * How many samples per axis each destination pixel averages when the photograph is scaled down.
  *
- * The source is 320 px across and the sprite is 64, a 5:1 reduction, so a single nearest-
- * neighbour sample per pixel throws away 24 of every 25 source pixels and turns the ribbon wires
- * into speckle. Nine samples is enough to keep them reading as wires, and this runs eight times
- * at startup and never again.
+ * The source is 320 px across and the drawn body is around 64, a 5:1 reduction, so a single
+ * nearest-neighbour sample per pixel throws away 24 of every 25 source pixels and turns the
+ * ribbon wires into speckle. Nine samples is enough to keep them reading as wires, and this runs
+ * once per orientation at startup and never again.
  */
 const SUPERSAMPLE = 3
 
 /**
- * Scale the photograph down to `sizePx` and rotate it `degrees` clockwise, in one pass.
+ * Scale the photograph to `bodyPx` and rotate it `degrees` clockwise onto a `canvasPx` square.
  *
- * Destination pixels are mapped BACK into the source, so every output pixel is covered exactly
- * once and no gaps open up at 45°. Colour is averaged weighted by alpha: the transparent region
- * around the chassis is transparent *black*, and averaging it in unweighted would ring the robot
- * with a dark halo that looks like the marker this node exists to delete.
- *
- * A 45° rotation cannot keep the corners of a square, and does not need to: the photograph's own
- * corners are fully transparent.
+ * The canvas is deliberately LARGER than the body: a rotated rectangle needs its diagonal, and
+ * the eight-heading renderer got away with a tight square only because it never had to keep the
+ * corners. Destination pixels are mapped BACK into the source, so every output pixel is covered
+ * exactly once and no gaps open up at an odd angle. Colour is averaged weighted by alpha: the
+ * region around the chassis is transparent *black*, and averaging it in unweighted would ring
+ * the robot with a dark halo that looks like the marker the photograph exists to replace.
  */
-function rotatedSprite(source: Raster, sizePx: number, degrees: number): Raster {
-  const out = createRaster(sizePx, sizePx)
+function rotatedSprite(
+  source: Raster,
+  bodyPx: { widthPx: number; lengthPx: number },
+  canvasPx: number,
+  degrees: number,
+): Raster {
+  const out = createRaster(canvasPx, canvasPx)
   const radians = (degrees * Math.PI) / 180
   const cos = Math.cos(radians)
   const sin = Math.sin(radians)
-  const destCentre = sizePx / 2
+  const destCentre = canvasPx / 2
   const sourceCentreX = source.width / 2
   const sourceCentreY = source.height / 2
-  const scale = source.width / sizePx
+  // The photograph is taken with the robot facing UP, so its own x axis is the body's WIDTH and
+  // its y axis the body's LENGTH. Scaling them separately is what lets a non-square body draw
+  // correctly instead of being squashed to a square.
+  const scaleAcross = source.width / bodyPx.widthPx
+  const scaleAlong = source.height / bodyPx.lengthPx
   const samples = SUPERSAMPLE * SUPERSAMPLE
 
-  for (let destY = 0; destY < sizePx; destY++) {
-    for (let destX = 0; destX < sizePx; destX++) {
+  for (let destY = 0; destY < canvasPx; destY++) {
+    for (let destX = 0; destX < canvasPx; destX++) {
       let red = 0
       let green = 0
       let blue = 0
@@ -138,11 +155,13 @@ function rotatedSprite(source: Raster, sizePx: number, degrees: number): Raster 
 
       for (let subY = 0; subY < SUPERSAMPLE; subY++) {
         for (let subX = 0; subX < SUPERSAMPLE; subX++) {
-          const u = (destX + (subX + 0.5) / SUPERSAMPLE - destCentre) * scale
-          const v = (destY + (subY + 0.5) / SUPERSAMPLE - destCentre) * scale
+          const u = destX + (subX + 0.5) / SUPERSAMPLE - destCentre
+          const v = destY + (subY + 0.5) / SUPERSAMPLE - destCentre
           // The inverse of a clockwise screen rotation (y grows downwards) by `degrees`.
-          const sourceX = Math.floor(sourceCentreX + u * cos + v * sin)
-          const sourceY = Math.floor(sourceCentreY - u * sin + v * cos)
+          const across = u * cos + v * sin
+          const along = -u * sin + v * cos
+          const sourceX = Math.floor(sourceCentreX + across * scaleAcross)
+          const sourceY = Math.floor(sourceCentreY + along * scaleAlong)
           if (sourceX < 0 || sourceY < 0 || sourceX >= source.width || sourceY >= source.height) {
             continue
           }
@@ -155,7 +174,7 @@ function rotatedSprite(source: Raster, sizePx: number, degrees: number): Raster 
         }
       }
 
-      const offset = (destY * sizePx + destX) * 4
+      const offset = (destY * canvasPx + destX) * 4
       out.data[offset] = alphaSum === 0 ? 0 : Math.round(red / alphaSum)
       out.data[offset + 1] = alphaSum === 0 ? 0 : Math.round(green / alphaSum)
       out.data[offset + 2] = alphaSum === 0 ? 0 : Math.round(blue / alphaSum)
@@ -205,67 +224,113 @@ const SPRITE_SOURCE_PATH = join(
   'robot-top-down.png',
 )
 
-/**
- * Decode once and pre-rotate all eight headings at startup, so rendering a frame stays a blit.
- *
- * The photograph is taken with the robot facing UP, so the rotation for a heading is simply its
- * position in the clockwise `HEADINGS` cycle times 45°. That is derived from the cycle rather
- * than written as a second table on purpose: a table would be a duplicate of `HEADINGS`' order
- * and could silently drift out of step with it.
- */
-function loadRobotSprites(): Readonly<Record<Heading, Raster>> {
-  const png = PNG.sync.read(readFileSync(SPRITE_SOURCE_PATH))
-  const source: Raster = { width: png.width, height: png.height, data: new Uint8Array(png.data) }
-
-  const sprites = {} as Record<Heading, Raster>
-  for (const [index, heading] of HEADINGS.entries()) {
-    sprites[heading] = rotatedSprite(source, SPRITE_PX, index * DEGREES_PER_TURN_STEP)
+let sourcePhotograph: Raster | null = null
+function photograph(): Raster {
+  if (sourcePhotograph === null) {
+    const png = PNG.sync.read(readFileSync(SPRITE_SOURCE_PATH))
+    sourcePhotograph = { width: png.width, height: png.height, data: new Uint8Array(png.data) }
   }
-  return sprites
+  return sourcePhotograph
 }
 
-const ROBOT_SPRITES = loadRobotSprites()
+interface SpriteSet {
+  /** The square canvas each orientation is drawn on; big enough to hold the body's diagonal. */
+  canvasPx: number
+  orientations: readonly Raster[]
+}
+
+/**
+ * Pre-rotated sprites for one drawn body size, decoded and resampled once and then reused.
+ *
+ * The cache is keyed on the DRAWN SIZE IN PIXELS rather than on the world or the preset, because
+ * that is the only thing the rasters depend on: two maps at the same scale carrying the same
+ * robot share one set, and a map at a different tile size correctly builds its own.
+ */
+const spriteCache = new Map<string, SpriteSet>()
+
+function spritesFor(widthPx: number, lengthPx: number): SpriteSet {
+  const key = `${widthPx}x${lengthPx}`
+  const cached = spriteCache.get(key)
+  if (cached) return cached
+
+  const canvasPx = Math.ceil(Math.hypot(widthPx, lengthPx))
+  const source = photograph()
+  const orientations: Raster[] = []
+  for (let index = 0; index < SPRITE_ORIENTATIONS; index++) {
+    orientations.push(
+      rotatedSprite(source, { widthPx, lengthPx }, canvasPx, (index * 360) / SPRITE_ORIENTATIONS),
+    )
+  }
+  const set: SpriteSet = { canvasPx, orientations }
+  spriteCache.set(key, set)
+  return set
+}
 
 /** Draw the world and the robot into a raw RGBA raster. */
-export function renderRaster(world: World, state: RobotWorldState): Raster {
-  const raster = createRaster(world.width * CELL_PX, world.height * CELL_PX)
+export function renderRaster(
+  world: World,
+  profile: RobotPhysicalProfile,
+  state: RobotWorldState,
+): Raster {
+  const raster = createRaster(world.widthTiles * TILE_PX, world.heightTiles * TILE_PX)
 
-  for (let y = 0; y < world.height; y++) {
-    for (let x = 0; x < world.width; x++) {
-      const kind = cellAt(world, x, y)
+  for (let yTiles = 0; yTiles < world.heightTiles; yTiles++) {
+    for (let xTiles = 0; xTiles < world.widthTiles; xTiles++) {
+      const kind = tileAt(world, xTiles, yTiles)
       if (kind === null) continue
-      fillRect(raster, x * CELL_PX, y * CELL_PX, CELL_PX, CELL_PX, PALETTE[kind])
+      fillRect(raster, xTiles * TILE_PX, yTiles * TILE_PX, TILE_PX, TILE_PX, PALETTE[kind])
     }
   }
 
-  // Faint cell separators, so a run of identically-coloured cells is still countable by eye.
-  // Drawn before the robot, so the robot's own footprint is not ruled across.
-  for (let y = 0; y < world.height; y++) {
-    for (let x = 0; x < world.width; x++) {
-      for (let i = 0; i < CELL_PX; i++) {
-        setPixel(raster, x * CELL_PX + i, y * CELL_PX, PALETTE.grid)
-        setPixel(raster, x * CELL_PX, y * CELL_PX + i, PALETTE.grid)
+  // Faint tile separators, so a run of identically-coloured tiles is still countable by eye.
+  // Drawn before the robot, so the robot's own body is not ruled across.
+  for (let yTiles = 0; yTiles < world.heightTiles; yTiles++) {
+    for (let xTiles = 0; xTiles < world.widthTiles; xTiles++) {
+      for (let i = 0; i < TILE_PX; i++) {
+        setPixel(raster, xTiles * TILE_PX + i, yTiles * TILE_PX, PALETTE.grid)
+        setPixel(raster, xTiles * TILE_PX, yTiles * TILE_PX + i, PALETTE.grid)
       }
     }
   }
 
-  // The sprite covers the whole 2×2 footprint anchored at the robot's top-left cell. A destroyed
-  // robot is drawn where it fell, so the final frame explains the ending.
-  blitSprite(raster, state.x * CELL_PX, state.y * CELL_PX, ROBOT_SPRITES[state.heading])
+  // THE ROBOT IS DRAWN FROM CENTIMETRES, AT A SUB-TILE POSITION. At 32 px to a 5 cm tile a
+  // 1.5 cm cycle is about 9.6 px, which is plainly visible movement; rounding the blit to a tile
+  // would erase it and make every short move look like a no-op. Only the final pixel offset is
+  // rounded, and the pose itself never is.
+  const pxPerCm = TILE_PX / world.tileSizeCm
+  const widthPx = Math.max(1, Math.round(profile.body.widthCm * pxPerCm))
+  const lengthPx = Math.max(1, Math.round(profile.body.lengthCm * pxPerCm))
+  const sprites = spritesFor(widthPx, lengthPx)
+  const orientation =
+    ((Math.round((state.headingDeg / 360) * SPRITE_ORIENTATIONS) % SPRITE_ORIENTATIONS) +
+      SPRITE_ORIENTATIONS) %
+    SPRITE_ORIENTATIONS
+
+  // A destroyed robot is drawn where it fell, so the final frame explains the ending.
+  blitSprite(
+    raster,
+    Math.round(state.xCm * pxPerCm - sprites.canvasPx / 2),
+    Math.round(state.yCm * pxPerCm - sprites.canvasPx / 2),
+    sprites.orientations[orientation],
+  )
 
   return raster
 }
 
 /**
  * Quality is high on purpose. This image is read by a vision model and asserted on by decoded
- * pixels, and JPEG's chroma smearing at low quality turns a one-cell colour patch into a blend
+ * pixels, and JPEG's chroma smearing at low quality turns a small colour patch into a blend
  * of itself and its neighbours.
  */
 export const JPEG_QUALITY = 92
 
 /** Render the world and encode it as image/jpeg bytes. */
-export function renderJpeg(world: World, state: RobotWorldState): Buffer {
-  const raster = renderRaster(world, state)
+export function renderJpeg(
+  world: World,
+  profile: RobotPhysicalProfile,
+  state: RobotWorldState,
+): Buffer {
+  const raster = renderRaster(world, profile, state)
   return jpegJs.encode(
     { width: raster.width, height: raster.height, data: raster.data },
     JPEG_QUALITY,
