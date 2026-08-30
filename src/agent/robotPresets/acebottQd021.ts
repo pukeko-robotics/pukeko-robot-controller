@@ -98,6 +98,12 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
   id: 'ACEBOTT-QD021',
   name: 'Acebott QD021 (biped)',
   hardwareId: 'ACEBOTT-QD021',
+  // No `physical` block, and that is the point rather than an omission: the
+  // measurements in DEFAULT_ROBOT_PHYSICAL_PROFILE (physical.ts) ARE this
+  // robot's, taken from the same hardware the `steps` calibration text above
+  // was measured on. Restating them here would be a second copy of numbers
+  // that must agree, i.e. a drift waiting to happen. A preset for a DIFFERENT
+  // robot states only the fields where it differs.
   tools: [
     {
       name: MOTION_TOOL_NAMES[0], // 'move_forward'

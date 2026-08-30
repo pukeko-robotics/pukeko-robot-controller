@@ -8,6 +8,7 @@
 // header comments for the dependency-direction rule.
 import type { RobotPreset, RobotToolDef } from './types.js';
 import { ACEBOTT_QD021_PRESET } from './acebottQd021.js';
+import { resolvePhysicalProfile, type RobotPhysicalProfile } from './physical.js';
 
 export const ROBOT_PRESETS: Readonly<Record<string, RobotPreset>> = Object.freeze({
   [ACEBOTT_QD021_PRESET.id]: ACEBOTT_QD021_PRESET,
@@ -41,6 +42,15 @@ export function getClientToolDefs(id: string = DEFAULT_ROBOT_PRESET_ID): RobotTo
   return getRobotPreset(id).tools.filter((t) => t.fulfillment === 'client');
 }
 
+// RC-51: the physical robot behind a preset — body, motion and sensor, fully
+// resolved so no field can arrive at a caller as `undefined`. This is the ONE
+// place the emulator (and, from RC-49, the prompt) reads the hardware from.
+export function getPhysicalProfile(
+  id: string = DEFAULT_ROBOT_PRESET_ID
+): RobotPhysicalProfile {
+  return resolvePhysicalProfile(getRobotPreset(id).physical);
+}
+
 export type {
   RobotPreset,
   RobotToolDef,
@@ -52,4 +62,15 @@ export type {
   ComposeStep,
   ReturnImageStep,
 } from './types.js';
+export type {
+  RobotBodyProfile,
+  RobotMotionProfile,
+  RobotSensorProfile,
+  RobotPhysicalProfile,
+  RobotPhysicalProfileOverrides,
+} from './physical.js';
+export {
+  DEFAULT_ROBOT_PHYSICAL_PROFILE,
+  resolvePhysicalProfile,
+} from './physical.js';
 export { ACEBOTT_QD021_PRESET } from './acebottQd021.js';

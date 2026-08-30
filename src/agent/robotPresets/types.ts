@@ -8,6 +8,7 @@
 // registry straight into the browser bundle, so anything reachable from here
 // ships to the client.
 import type { ZodTypeAny } from 'zod';
+import type { RobotPhysicalProfileOverrides } from './physical.js';
 
 export type ToolFulfillment = 'client' | 'server';
 
@@ -123,4 +124,11 @@ export interface RobotPreset {
   // Tool order matters — it's part of "same tool set" for reproduction
   // purposes (e.g. test assertions, any future preset-authoring UI listing).
   tools: RobotToolDef[];
+  // RC-51: the robot's physical characteristics — body, motion and sensor, all
+  // in centimetres and degrees. Optional and partial: anything a preset does
+  // not state takes DEFAULT_ROBOT_PHYSICAL_PROFILE's value, so a preset that
+  // sets nothing describes the measured ACEBOTT QD021. Read it through
+  // `resolvePhysicalProfile` rather than reaching in here, so an omitted field
+  // can never reach the emulator as `undefined`.
+  physical?: RobotPhysicalProfileOverrides;
 }
