@@ -82,11 +82,8 @@ export const CELL_LEGEND: Readonly<Record<string, CellKind>> = {
  */
 export const DEFAULT_TILE_SIZE_CM = 5
 
-/** Compass names as heading degrees, for map authors. The pose itself is always a number. */
+/** North as heading degrees, for map authors. The pose itself is always a number. */
 export const NORTH_DEG = 0
-export const EAST_DEG = 90
-export const SOUTH_DEG = 180
-export const WEST_DEG = 270
 
 export interface WorldMap {
   /** Stable identifier, so a response or a log can say which world it is talking about. */
@@ -103,8 +100,8 @@ export interface WorldMap {
   /**
    * Where the robot starts. `xTiles, yTiles` name a TILE — map geometry is written in tiles —
    * and the robot's body centre is placed at the centre of that tile. `headingDeg` is degrees
-   * clockwise from north; the {@link NORTH_DEG} constants above exist so an author need not
-   * remember which way 90 points.
+   * clockwise from north — 0 north, 90 east, 180 south, 270 west — and any angle in between is
+   * as valid as those four; {@link NORTH_DEG} is there so the commonest one reads as a name.
    */
   start: { xTiles: number; yTiles: number; headingDeg: number }
 }
@@ -130,9 +127,9 @@ export interface World {
  * Phase one ships exactly one map, and it ships as data so that adding more is a data change.
  *
  * The layout exercises the things a control loop has to cope with: an open floor to calibrate
- * on, a walled pocket holding the green target (reachable, but only from below), an abyss
- * running down the middle that a careless multi-cycle move will fall into, a soft obstacle on
- * the left approach, and a red target in the open at the bottom.
+ * on, a walled pocket holding a three-tile green target (reachable, but only from below), an
+ * abyss running down the middle that a careless multi-cycle move will fall into, a soft obstacle
+ * on the left approach, and a red target in the open at the bottom.
  *
  * At 5 cm a tile this is 70 x 60 cm, which is the size of the arena actually used with the real
  * robot.
@@ -153,8 +150,10 @@ export interface World {
  *  ...
  *
  * The pocket's mouth is the three-tile gap at xTiles=2..4, yTiles=4: the walls at xTiles=1 and
- * xTiles=5 run from yTiles=0 to yTiles=3 and the roof at yTiles=0 closes the top, so the only
- * body that reaches the green tiles is one that came up the mouth.
+ * xTiles=5 run from yTiles=0 to yTiles=3 and the five-tile roof at yTiles=0, xTiles=1..5 closes
+ * the top, so the only body that reaches the green tiles is one that came up the mouth. The
+ * pocket is as wide as its mouth, so the green target is the three tiles 2,1 · 3,1 · 4,1 — the
+ * target's size follows the mouth's, and narrowing one narrows the other.
  */
 export const PHASE_ONE_MAP: WorldMap = {
   id: 'phase-one-arena',
@@ -391,29 +390,42 @@ function tileRect(world: World, xTiles: number, yTiles: number) {
   }
 }
 
-function boundsOf(points: readonly PointCm[]) {
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
+/** The axis-aligned bounding box of a point set, in CENTIMETRES. */
+function boundsCmOf(points: readonly PointCm[]) {
+  let minXCm = Infinity
+  let minYCm = Infinity
+  let maxXCm = -Infinity
+  let maxYCm = -Infinity
   for (const point of points) {
-    if (point.xCm < minX) minX = point.xCm
-    if (point.yCm < minY) minY = point.yCm
-    if (point.xCm > maxX) maxX = point.xCm
-    if (point.yCm > maxY) maxY = point.yCm
+    if (point.xCm < minXCm) minXCm = point.xCm
+    if (point.yCm < minYCm) minYCm = point.yCm
+    if (point.xCm > maxXCm) maxXCm = point.xCm
+    if (point.yCm > maxYCm) maxYCm = point.yCm
   }
-  return { minX, minY, maxX, maxY }
+  return { minXCm, minYCm, maxXCm, maxYCm }
 }
 
-/** The tiles a shape's bounding box could possibly touch, clipped to the grid. */
+/**
+ * The tiles a shape's bounding box could possibly touch, clipped to the grid.
+ *
+ * THIS IS ONE OF THE THREE PLACES THE TWO UNITS MEET, so it hands back both and names both: the
+ * `*Tiles` fields are grid indices and `boundsCm` is the same box in centimetres. An unnamed
+ * `from`/`to` beside an unnamed `bounds` is exactly the pair a later reader mixes up.
+ */
 function candidateTiles(world: World, points: readonly PointCm[]) {
-  const bounds = boundsOf(points)
+  const boundsCm = boundsCmOf(points)
   return {
-    fromX: Math.max(0, Math.floor((bounds.minX + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
-    toX: Math.min(world.widthTiles - 1, Math.floor((bounds.maxX - OVERLAP_EPSILON_CM) / world.tileSizeCm)),
-    fromY: Math.max(0, Math.floor((bounds.minY + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
-    toY: Math.min(world.heightTiles - 1, Math.floor((bounds.maxY - OVERLAP_EPSILON_CM) / world.tileSizeCm)),
-    bounds,
+    fromXTiles: Math.max(0, Math.floor((boundsCm.minXCm + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    toXTiles: Math.min(
+      world.widthTiles - 1,
+      Math.floor((boundsCm.maxXCm - OVERLAP_EPSILON_CM) / world.tileSizeCm),
+    ),
+    fromYTiles: Math.max(0, Math.floor((boundsCm.minYCm + OVERLAP_EPSILON_CM) / world.tileSizeCm)),
+    toYTiles: Math.min(
+      world.heightTiles - 1,
+      Math.floor((boundsCm.maxYCm - OVERLAP_EPSILON_CM) / world.tileSizeCm),
+    ),
+    boundsCm,
   }
 }
 
@@ -474,17 +486,17 @@ export function probeSweptBody(
   headingDeg: number,
 ): CollisionVerdict {
   const polygon = sweptBodyPolygon(body, from, to, headingDeg)
-  const { fromX, toX, fromY, toY, bounds } = candidateTiles(world, polygon)
+  const { fromXTiles, toXTiles, fromYTiles, toYTiles, boundsCm } = candidateTiles(world, polygon)
 
   // Outside the world is a hard block, exactly as a wall is. Reported as the tile just past the
   // edge that the body reached into, so the message names a place rather than a bound.
-  if (bounds.minX < -OVERLAP_EPSILON_CM) {
+  if (boundsCm.minXCm < -OVERLAP_EPSILON_CM) {
     return { kind: 'blocked', xTiles: -1, yTiles: Math.floor(from.yCm / world.tileSizeCm), reason: 'edge' }
   }
-  if (bounds.minY < -OVERLAP_EPSILON_CM) {
+  if (boundsCm.minYCm < -OVERLAP_EPSILON_CM) {
     return { kind: 'blocked', xTiles: Math.floor(from.xCm / world.tileSizeCm), yTiles: -1, reason: 'edge' }
   }
-  if (bounds.maxX > world.widthCm + OVERLAP_EPSILON_CM) {
+  if (boundsCm.maxXCm > world.widthCm + OVERLAP_EPSILON_CM) {
     return {
       kind: 'blocked',
       xTiles: world.widthTiles,
@@ -492,7 +504,7 @@ export function probeSweptBody(
       reason: 'edge',
     }
   }
-  if (bounds.maxY > world.heightCm + OVERLAP_EPSILON_CM) {
+  if (boundsCm.maxYCm > world.heightCm + OVERLAP_EPSILON_CM) {
     return {
       kind: 'blocked',
       xTiles: Math.floor(from.xCm / world.tileSizeCm),
@@ -502,8 +514,8 @@ export function probeSweptBody(
   }
 
   let snag: { xTiles: number; yTiles: number } | null = null
-  for (let yTiles = fromY; yTiles <= toY; yTiles++) {
-    for (let xTiles = fromX; xTiles <= toX; xTiles++) {
+  for (let yTiles = fromYTiles; yTiles <= toYTiles; yTiles++) {
+    for (let xTiles = fromXTiles; xTiles <= toXTiles; xTiles++) {
       const kind = world.cells[yTiles][xTiles]
       if (kind !== 'hard' && kind !== 'soft') continue
       if (!overlapsRect(polygon, tileRect(world, xTiles, yTiles))) continue
@@ -517,8 +529,8 @@ export function probeSweptBody(
   // step over a hole, however the tile size and the stride are later configured.
   const centrePath: PointCm[] = [from, to]
   const centreTiles = candidateTiles(world, centrePath)
-  for (let yTiles = centreTiles.fromY; yTiles <= centreTiles.toY; yTiles++) {
-    for (let xTiles = centreTiles.fromX; xTiles <= centreTiles.toX; xTiles++) {
+  for (let yTiles = centreTiles.fromYTiles; yTiles <= centreTiles.toYTiles; yTiles++) {
+    for (let xTiles = centreTiles.fromXTiles; xTiles <= centreTiles.toXTiles; xTiles++) {
       if (world.cells[yTiles][xTiles] !== 'abyss') continue
       if (segmentEntersRect(from, to, tileRect(world, xTiles, yTiles))) {
         return { kind: 'fatal', xTiles, yTiles }
@@ -725,7 +737,13 @@ export function move(
   let blockedCycles = 0
   let outcome: MoveOutcome = 'moved'
   let destroyed = false
-  let detail = `Moved ${direction} ${cycles} cycle(s) of about ${nominalCm} cm each.`
+  // A blocked cycle does not end the loop, so its sentence CANNOT be written inside the loop: a
+  // later cycle that succeeds would advance `cyclesTaken` past a string already fixed, and the
+  // agent would be told it had not moved after genuinely travelling. Only the two verdicts that
+  // END the move — fatal and snag — can state their own sentence, because nothing follows them.
+  // Everything else is composed once, below, from the final tallies.
+  let endedBy: string | null = null
+  let lastBlock: { xTiles: number; yTiles: number; reason: 'edge' | 'obstacle' } | null = null
 
   for (let cycle = 0; cycle < cycles; cycle++) {
     const step = jittered(nominalCm, profile.motion.jitterFraction, seed)
@@ -737,10 +755,7 @@ export function move(
     if (verdict.kind === 'blocked') {
       blockedCycles++
       outcome = 'blocked'
-      detail =
-        verdict.reason === 'edge'
-          ? `Blocked by the edge of the world at tile ${verdict.xTiles},${verdict.yTiles}. Moved ${cyclesTaken} of ${cycles} cycle(s).`
-          : `Blocked by an obstacle at tile ${verdict.xTiles},${verdict.yTiles}. Moved ${cyclesTaken} of ${cycles} cycle(s).`
+      lastBlock = { xTiles: verdict.xTiles, yTiles: verdict.yTiles, reason: verdict.reason }
       continue
     }
 
@@ -751,16 +766,29 @@ export function move(
     if (verdict.kind === 'fatal') {
       destroyed = true
       outcome = 'destroyed'
-      detail = `Fell into the abyss at tile ${verdict.xTiles},${verdict.yTiles} after ${cyclesTaken} of ${cycles} cycle(s). The robot is destroyed and the run is over.`
+      endedBy = `Fell into the abyss at tile ${verdict.xTiles},${verdict.yTiles} after ${cyclesTaken} of ${cycles} cycle(s). The robot is destroyed and the run is over.`
       break
     }
 
     if (verdict.kind === 'snag') {
       outcome = 'partial'
-      detail = `Snagged on a soft obstacle at tile ${verdict.xTiles},${verdict.yTiles}; the move stopped there after ${cyclesTaken} of ${cycles} cycle(s).`
+      endedBy = `Snagged on a soft obstacle at tile ${verdict.xTiles},${verdict.yTiles}; the move stopped there after ${cyclesTaken} of ${cycles} cycle(s).`
       break
     }
   }
+
+  // Composed from the tallies, and NOMINAL ONLY: how many cycles were asked for, how many ran,
+  // how many were refused, and what one cycle is worth on paper. The emulator knows the distance
+  // actually covered and does not say it — see `MoveResult.detail`.
+  const detail =
+    endedBy ??
+    (lastBlock === null
+      ? `Moved ${direction} ${cycles} cycle(s) of about ${nominalCm} cm each.`
+      : `${
+          lastBlock.reason === 'edge'
+            ? `Blocked by the edge of the world at tile ${lastBlock.xTiles},${lastBlock.yTiles}`
+            : `Blocked by an obstacle at tile ${lastBlock.xTiles},${lastBlock.yTiles}`
+        }. Moved ${direction} ${cyclesTaken} of ${cycles} cycle(s) of about ${nominalCm} cm each; ${blockedCycles} cycle(s) went nowhere.`)
 
   return {
     state: { xCm, yCm, headingDeg: state.headingDeg, destroyed, seed },
@@ -876,16 +904,23 @@ export function distanceCm(
   const tileSizeCm = world.tileSizeCm
   let xTiles = Math.floor(originXCm / tileSizeCm)
   let yTiles = Math.floor(originYCm / tileSizeCm)
-  const stepX = forward.xCm > 0 ? 1 : forward.xCm < 0 ? -1 : 0
-  const stepY = forward.yCm > 0 ? 1 : forward.yCm < 0 ? -1 : 0
-  const nextBoundary = (position: number, tile: number, step: number) =>
-    step > 0 ? (tile + 1) * tileSizeCm - position : position - tile * tileSizeCm
-  let travelToNextX =
-    stepX === 0 ? Infinity : nextBoundary(originXCm, xTiles, stepX) / Math.abs(forward.xCm)
-  let travelToNextY =
-    stepY === 0 ? Infinity : nextBoundary(originYCm, yTiles, stepY) / Math.abs(forward.yCm)
-  const travelPerTileX = stepX === 0 ? Infinity : tileSizeCm / Math.abs(forward.xCm)
-  const travelPerTileY = stepY === 0 ? Infinity : tileSizeCm / Math.abs(forward.yCm)
+  const stepXTiles = forward.xCm > 0 ? 1 : forward.xCm < 0 ? -1 : 0
+  const stepYTiles = forward.yCm > 0 ? 1 : forward.yCm < 0 ? -1 : 0
+  // The one multiplication by `tileSizeCm` in the whole sensor, so it is named in full: how far
+  // in CENTIMETRES it is from a position on an axis to the far face of the TILE it sits in.
+  const distanceToTileFaceCm = (positionCm: number, indexTiles: number, stepTiles: number) =>
+    stepTiles > 0 ? (indexTiles + 1) * tileSizeCm - positionCm : positionCm - indexTiles * tileSizeCm
+  // Ray travel, in centimetres — not a count of anything, despite counting tile crossings.
+  let travelToNextXCm =
+    stepXTiles === 0
+      ? Infinity
+      : distanceToTileFaceCm(originXCm, xTiles, stepXTiles) / Math.abs(forward.xCm)
+  let travelToNextYCm =
+    stepYTiles === 0
+      ? Infinity
+      : distanceToTileFaceCm(originYCm, yTiles, stepYTiles) / Math.abs(forward.yCm)
+  const travelPerTileXCm = stepXTiles === 0 ? Infinity : tileSizeCm / Math.abs(forward.xCm)
+  const travelPerTileYCm = stepYTiles === 0 ? Infinity : tileSizeCm / Math.abs(forward.yCm)
 
   let travelledCm = 0
   // The ray can cross at most one tile per grid line in each axis before it leaves the world.
@@ -894,14 +929,14 @@ export function distanceCm(
     const kind = tileAt(world, xTiles, yTiles)
     // Off the grid, or something solid: either way the beam ends here.
     if (kind === null || kind === 'hard' || kind === 'soft') return clamp(travelledCm)
-    if (travelToNextX < travelToNextY) {
-      travelledCm = travelToNextX
-      xTiles += stepX
-      travelToNextX += travelPerTileX
+    if (travelToNextXCm < travelToNextYCm) {
+      travelledCm = travelToNextXCm
+      xTiles += stepXTiles
+      travelToNextXCm += travelPerTileXCm
     } else {
-      travelledCm = travelToNextY
-      yTiles += stepY
-      travelToNextY += travelPerTileY
+      travelledCm = travelToNextYCm
+      yTiles += stepYTiles
+      travelToNextYCm += travelPerTileYCm
     }
     if (travelledCm >= profile.sensor.maxRangeCm) return profile.sensor.maxRangeCm
   }

@@ -551,6 +551,52 @@ describe('/capture', () => {
     expect(large / standard).toBeLessThan(4.6)
   })
 
+  it('draws the same body at the same centimetre size when the map changes tile size', () => {
+    // The renderer holds the ONLY place centimetres become pixels: `TILE_PX / world.tileSizeCm`.
+    // The two maps below are the same 50 x 50 cm arena drawn at 5 cm and at 2.5 cm tiles, with
+    // the same 10 cm body standing in the same physical spot. A tile is 32 px on both, so
+    // halving the tile size doubles what a centimetre is worth and the drawn body must cover
+    // FOUR times the pixels. A renderer that hardcoded the 5 cm default draws it identically
+    // instead — which is the whole defect this asserts against, and it is invisible to every
+    // other test in the suite because nothing else renders at a tile size but 5.
+    const openAt = (tileSizeCm: number, widthTiles: number, startTile: number) =>
+      createWorld(
+        {
+          id: `open-${tileSizeCm}`,
+          rows: Array.from({ length: widthTiles }, () => '.'.repeat(widthTiles)),
+          tileSizeCm,
+          start: { xTiles: startTile, yTiles: startTile, headingDeg: 0 },
+        },
+        EXACT.body,
+      )
+    const robot = { xCm: 25, yCm: 25, headingDeg: 0, destroyed: false, seed: 1 }
+    const darkPixels = (world: ReturnType<typeof openAt>) => {
+      const raster = renderRaster(world, EXACT, robot)
+      let dark = 0
+      for (let offset = 0; offset < raster.data.length; offset += 4) {
+        if (
+          raster.data[offset] < 150 &&
+          raster.data[offset + 1] < 150 &&
+          raster.data[offset + 2] < 150
+        ) {
+          dark++
+        }
+      }
+      return dark
+    }
+
+    const coarse = openAt(5, 10, 5)
+    const fine = openAt(2.5, 20, 10)
+    expect(coarse.widthCm).toBe(50)
+    expect(fine.widthCm).toBe(50)
+
+    const onCoarse = darkPixels(coarse)
+    const onFine = darkPixels(fine)
+    expect(onCoarse).toBeGreaterThan(100)
+    expect(onFine / onCoarse).toBeGreaterThan(3.4)
+    expect(onFine / onCoarse).toBeLessThan(4.6)
+  })
+
   it('moves the drawing by a SUB-TILE amount when the robot takes one cycle', async () => {
     // 1.5 cm at 6.4 px/cm is 9.6 px — plainly visible, and not a tile. A renderer that rounded
     // the pose to a tile would produce two identical frames here.

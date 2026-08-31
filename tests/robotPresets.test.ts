@@ -301,13 +301,17 @@ describe('the physical robot behind a preset', () => {
     // The one place the two worlds could silently diverge: the prompt says 1.5 cm and 15 degrees
     // a cycle, so the simulated robot must move 1.5 cm and turn 15 degrees a cycle. This is the
     // whole reason the numbers live on the preset rather than in the emulator.
+    // Both sides written out: 1.5 and 15 are the measurements, and a test that interpolated them
+    // from the profile would agree with a preset that had quietly changed both at once.
     const profile = getPhysicalProfile()
+    expect(profile.motion.forwardPerCycleCm).toBe(1.5)
+    expect(profile.motion.turnDegreesPerCycle).toBe(15)
     const description = getRobotPreset().tools.find((tool) => tool.name === 'move_forward')!
       .description
-    expect(description).toContain(`${profile.motion.forwardPerCycleCm} cm per cycle`)
+    expect(description).toContain('1.5 cm per cycle')
     const turnDescription = getRobotPreset().tools.find((tool) => tool.name === 'turn_left')!
       .description
-    expect(turnDescription).toContain(`${profile.motion.turnDegreesPerCycle}\u00b0 per cycle`)
+    expect(turnDescription).toContain('15\u00b0 per cycle')
   })
 
   it('lets a preset override any subset and keeps the defaults for the rest', () => {

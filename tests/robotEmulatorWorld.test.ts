@@ -630,7 +630,49 @@ describe('jitter is seeded, and a seed is the whole of a run', () => {
     const achievedCm = 22.5 - result.state.yCm
     expect(achievedCm).not.toBe(6)
     expect(result.detail).toContain('1.5 cm')
-    expect(result.detail).not.toContain(String(achievedCm))
+    // The achieved figure at any precision a sentence would plausibly round it to. Comparing
+    // against the raw `String(achievedCm)` would be vacuous: that is a 16-digit float no message
+    // could contain, so it would pass against a `detail` that leaked the distance to 2 dp.
+    for (const digits of [2, 3]) {
+      expect(result.detail, `${digits} dp`).not.toContain(achievedCm.toFixed(digits))
+    }
+  })
+
+  it('reports the commanded rotation, never the rotation actually achieved', () => {
+    // Turning is the other half of the motion interface, and it jitters too: 1.5% of 15 degrees
+    // is 0.225 a cycle, so six cycles land near 90 and never on it. A `detail` that stated the
+    // achieved angle would be handing a dead-reckoning agent precisely the odometry the hardware
+    // cannot give it. Jitter is ON here on purpose — at `jitterFraction: 0` the nominal and the
+    // achieved figure are equal and no assertion can tell the two apart.
+    const result = turn(JITTERY, at(22.5, 22.5, 0, 99), 'right', 6)
+    const achievedDeg = result.state.headingDeg
+    expect(achievedDeg).not.toBe(90)
+    expect(result.detail).toContain('15 degrees')
+    expect(result.detail).toContain('90 degrees')
+    for (const digits of [2, 3]) {
+      expect(result.detail, `${digits} dp`).not.toContain(achievedDeg.toFixed(digits))
+    }
+  })
+
+  it('keeps the sentence in step with the cycles when a blocked cycle is followed by a good one', () => {
+    // A blocked cycle is a no-op the run survives, so a shorter jittered draw can fit where the
+    // last one overran. The sentence is therefore composed AFTER the loop: written inside it, the
+    // block's wording would be frozen at the count of that moment and the agent would be told
+    // "0 of 10" after genuinely travelling. Corridor wall face at 25 cm, body 10 cm wide, centre
+    // at 18.5 — 1.5 cm of clearance, which the shipped 1.5% jitter straddles.
+    const world = createWorld(corridor('#'), EXACT.body)
+    const result = move(world, JITTERY, at(18.5, 12, 90, 545), 'forward', 10)
+    expect(result.blockedCycles).toBeGreaterThan(0)
+    expect(result.cyclesTaken).toBeGreaterThan(0)
+    expect(result.state.xCm).toBeGreaterThan(18.5)
+    expect(result.detail).toContain(`Moved forward ${result.cyclesTaken} of 10 cycle(s)`)
+    expect(result.detail).not.toContain('Moved forward 0 of 10 cycle(s)')
+    // Still nominal only: the cycle size on paper, never the centimetres actually covered.
+    expect(result.detail).toContain('1.5 cm')
+    const achievedCm = result.state.xCm - 18.5
+    for (const digits of [2, 3]) {
+      expect(result.detail, `${digits} dp`).not.toContain(achievedCm.toFixed(digits))
+    }
   })
 
   it('advances the seed on a blocked cycle too, because the gait still ran', () => {
