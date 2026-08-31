@@ -22,10 +22,16 @@ import type { RecipeStep, RobotPreset } from './types.js';
 // consolidating onto one string — is what makes this a true byte-for-byte
 // reproduction of prior model-facing behaviour, not just prior server-side
 // code.
+//
+// RC-49: the two figures below used to be conflated as "1 forward/backward
+// cycle ≈ 1.5 cm", which was false — the gait is asymmetric and the robot
+// profile has always said backward is 1.3 cm (see physical.ts). The prose was
+// the copy that was wrong, so the prose is what changed; the profile's numbers
+// are the hardware's and are never bent to make a text line up.
 const STEPS_DESCRIPTION_SERVER =
-  'Number of cycles to run. Defaults to 1; capped at 10 by the firmware. Calibration: 1 forward/backward cycle ≈ 1.5 cm; 6 turn cycles ≈ 90° (~15° per turn cycle).';
+  'Number of cycles to run. Defaults to 1; capped at 10 by the firmware. Calibration: 1 forward cycle ≈ 1.5 cm; 1 backward cycle ≈ 1.3 cm; 6 turn cycles ≈ 90° (~15° per turn cycle).';
 const STEPS_DESCRIPTION_CLIENT =
-  'Number of cycles to run (1-10, defaults to 1). 1 forward/backward cycle ≈ 1.5 cm; 1 turn cycle ≈ 15°; 6 turn cycles ≈ 90°.';
+  'Number of cycles to run (1-10, defaults to 1). 1 forward cycle ≈ 1.5 cm; 1 backward cycle ≈ 1.3 cm; 1 turn cycle ≈ 15°; 6 turn cycles ≈ 90°.';
 
 const stepsZodSchema = z.object({
   steps: z
@@ -121,7 +127,9 @@ export const ACEBOTT_QD021_PRESET: RobotPreset = {
     },
     {
       name: MOTION_TOOL_NAMES[1], // 'move_backward'
-      description: `Walk the robot backward. Optional \`steps\` (1-10). ~1.5 cm per cycle. ${MOTION_DESCRIPTION_TAIL}`,
+      // RC-49: 1.3, not 1.5 — the gait is asymmetric (physical.ts's
+      // `backwardPerCycleCm`), and this text said 1.5 for as long as it existed.
+      description: `Walk the robot backward. Optional \`steps\` (1-10). ~1.3 cm per cycle. ${MOTION_DESCRIPTION_TAIL}`,
       zodSchema: stepsZodSchema,
       jsonSchema: stepsJsonSchema,
       fulfillment: 'client',

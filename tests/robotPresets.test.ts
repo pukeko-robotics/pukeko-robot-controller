@@ -30,7 +30,7 @@ const EXPECTED_DESCRIPTIONS: Record<string, string> = {
   move_forward:
     'Walk the robot forward. Optional `steps` (1-10) for multiple cycles. ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
   move_backward:
-    'Walk the robot backward. Optional `steps` (1-10). ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
+    'Walk the robot backward. Optional `steps` (1-10). ~1.3 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
   turn_left:
     'Rotate the robot left in place. Optional `steps` (1-10). ~15° per cycle; 6 ≈ 90°. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
   turn_right:
@@ -65,6 +65,14 @@ const EXPECTED_CLIENT_ENDPOINTS: Record<string, string> = {
   turn_right: '/turn_right',
 }
 
+/**
+ * The strings below are the pre-RC-1 tool set reproduced verbatim, with ONE deliberate
+ * exception: RC-49 corrected the backward stride from 1.5 cm to 1.3 cm everywhere the prose
+ * conflated it with the forward stride. `backwardPerCycleCm` on the robot profile has always been
+ * 1.3 — the gait is asymmetric — so the text was simply wrong, and the profile is never edited to
+ * make a text agree with it. `tests/calibrationProse.test.ts` is what now keeps the two in step;
+ * the literals here pin the wording, that spec checks the figures.
+ */
 describe('ACEBOTT-QD021 preset — byte-for-byte reproduction of the pre-RC-1 tool set', () => {
   it('is the default preset', () => {
     expect(DEFAULT_ROBOT_PRESET_ID).toBe('ACEBOTT-QD021')
@@ -204,7 +212,7 @@ describe('getClientToolDefs — what the browser client (App.vue) derives its to
       move_forward:
         'Walk the robot forward. Optional `steps` (1-10). ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
       move_backward:
-        'Walk the robot backward. Optional `steps` (1-10). ~1.5 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
+        'Walk the robot backward. Optional `steps` (1-10). ~1.3 cm per cycle. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
       turn_left:
         'Rotate the robot left in place. Optional `steps` (1-10). ~15° per cycle; 6 ≈ 90°. Automatically captures Before/After camera frames on every call (no need to call capture_image around it). It does NOT read the distance sensor — call read_distance yourself when you need range.',
       turn_right:
@@ -232,7 +240,7 @@ describe('getClientToolDefs — what the browser client (App.vue) derives its to
     // its own tools — which App.vue always does. So this exact string,
     // not the server's zod description, is what "byte-for-byte" must match.
     const ORIGINAL_APP_VUE_STEPS_DESCRIPTION =
-      'Number of cycles to run (1-10, defaults to 1). 1 forward/backward cycle ≈ 1.5 cm; 1 turn cycle ≈ 15°; 6 turn cycles ≈ 90°.'
+      'Number of cycles to run (1-10, defaults to 1). 1 forward cycle ≈ 1.5 cm; 1 backward cycle ≈ 1.3 cm; 1 turn cycle ≈ 15°; 6 turn cycles ≈ 90°.'
     const defs = getClientToolDefs()
     for (const def of defs) {
       expect(def.jsonSchema).toEqual({
@@ -265,7 +273,7 @@ describe('getClientToolDefs — what the browser client (App.vue) derives its to
       .shape.steps.description
     expect(serverDescription).not.toBe(clientDescription)
     expect(serverDescription).toBe(
-      'Number of cycles to run. Defaults to 1; capped at 10 by the firmware. Calibration: 1 forward/backward cycle ≈ 1.5 cm; 6 turn cycles ≈ 90° (~15° per turn cycle).'
+      'Number of cycles to run. Defaults to 1; capped at 10 by the firmware. Calibration: 1 forward cycle ≈ 1.5 cm; 1 backward cycle ≈ 1.3 cm; 6 turn cycles ≈ 90° (~15° per turn cycle).'
     )
   })
 })
@@ -297,22 +305,13 @@ describe('the physical robot behind a preset', () => {
     expect(profile.sensor).toEqual({ minRangeCm: 3, maxRangeCm: 400, beamAngleDegrees: 15 })
   })
 
-  it('agrees with the calibration the tool descriptions state to the model', () => {
-    // The one place the two worlds could silently diverge: the prompt says 1.5 cm and 15 degrees
-    // a cycle, so the simulated robot must move 1.5 cm and turn 15 degrees a cycle. This is the
-    // whole reason the numbers live on the preset rather than in the emulator.
-    // Both sides written out: 1.5 and 15 are the measurements, and a test that interpolated them
-    // from the profile would agree with a preset that had quietly changed both at once.
-    const profile = getPhysicalProfile()
-    expect(profile.motion.forwardPerCycleCm).toBe(1.5)
-    expect(profile.motion.turnDegreesPerCycle).toBe(15)
-    const description = getRobotPreset().tools.find((tool) => tool.name === 'move_forward')!
-      .description
-    expect(description).toContain('1.5 cm per cycle')
-    const turnDescription = getRobotPreset().tools.find((tool) => tool.name === 'turn_left')!
-      .description
-    expect(turnDescription).toContain('15\u00b0 per cycle')
-  })
+  // Agreement between the profile and the prose the model reads is checked by ONE mechanism, and
+  // it is not here: `tests/calibrationProse.test.ts` (RC-49). That spec is authoritative for it.
+  // An `it(...)` that spot-checked two `toContain('1.5 cm')` strings used to sit here; it covered
+  // a strict subset of the same ground (the forward stride and the single-cycle turn angle, in
+  // two of the six places they are stated) and could demonstrate nothing, because a literal
+  // substring check cannot be run against a deliberately wrong profile. Two half-overlapping
+  // guards for one invariant is how the weaker one ends up being the one people trust.
 
   it('lets a preset override any subset and keeps the defaults for the rest', () => {
     const partial = resolvePhysicalProfile({

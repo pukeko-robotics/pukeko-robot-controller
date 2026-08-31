@@ -89,12 +89,17 @@ export interface RobotPhysicalProfileOverrides {
  * The defaults, which are the measured ACEBOTT QD021.
  *
  * THESE ARE MEASUREMENTS OF PHYSICAL HARDWARE, not tuning knobs. The tool
- * descriptions the model reads have said "1 forward/backward cycle ~ 1.5 cm;
- * 6 turn cycles ~ 90 degrees (~15 degrees per turn cycle)" since long before
+ * descriptions the model reads have stated this calibration since long before
  * the emulator existed, and `system-prompt.md` describes the 3 cm bumper and
  * the beam cone. The numbers are the hardware's and the emulator adopts them.
  * Never adjust one to make the simulation tidier — the whole point of the
  * simulated world is that practice against it transfers.
+ *
+ * RC-49 makes that one-directional rule enforceable: `tests/calibrationProse.
+ * test.ts` parses the figures back out of the prose and compares them to what
+ * is written here, so a change on this side that the prose has not followed
+ * fails a test naming the figure and both values. When it fires, the prose is
+ * what moves.
  */
 export const DEFAULT_ROBOT_PHYSICAL_PROFILE: RobotPhysicalProfile = Object.freeze({
   // The measured chassis, seen top-down. Square, so a turn does not change how
