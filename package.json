@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@copilotkit/vue": "1.66.4",
-    "@galvanized-pukeko/vue-ui": "^0.1.1",
+    "@galvanized-pukeko/vue-ui": "^0.2.2",
     "@gaunt-sloth/agent": "2.0.0-alpha.24",
     "@gaunt-sloth/core": "2.0.0-alpha.24",
     "@langchain/anthropic": "^1.4.1",

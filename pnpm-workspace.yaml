@@ -6,14 +6,6 @@ overrides:
   # No @gaunt-sloth/* redirect needed: alpha.6 declares zod `^4.0.0` itself
   # (GS2-15 fix c), so pnpm no longer dedupes the gaunt-sloth subtree onto this
   # repo's zod 3.
-  #
-  # PLAT-22 (temporary, mirrors the REL-9 pattern in reverse): published
-  # @galvanized-pukeko/vue-ui@0.1.1 predates PLAT-23's applyTheme/resetTheme
-  # API (merged on-disk 2026-07-15, not yet republished), so redirect to the
-  # sibling PLAT-22 galvanized-pukeko worktree to build against it. DROP this
-  # once vue-ui republishes with applyTheme and bump the package.json pin —
-  # same cleanup REL-9 did for the alpha.5→alpha.6 file: redirect.
-  '@galvanized-pukeko/vue-ui': 'file:../galvanized-pukeko/packages/galvanized-pukeko-vue-ui'
   # GS2-43 gaunt-sloth file: overrides dropped once @gaunt-sloth/*@2.0.0-alpha.24
   # (the first release carrying the `prompts` config object) published — the
   # package.json pins below now resolve the `prompts` schema straight from npm.
@@ -25,6 +17,6 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@galvanized-pukeko/vue-ui@0.1.1'
+  - '@galvanized-pukeko/vue-ui@0.2.2'
   - '@gaunt-sloth/agent@2.0.0-alpha.24'
   - '@gaunt-sloth/core@2.0.0-alpha.24'
