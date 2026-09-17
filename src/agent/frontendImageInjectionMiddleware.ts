@@ -1,6 +1,38 @@
+/**
+ * @packageDocumentation
+ * Robot's frontend-image-injection middleware: turns a `capture_image` or motion tool result
+ * (`{mimeType,data}`) into a vision HumanMessage the model can actually see.
+ *
+ * SIBLING IMPLEMENTATION — read this before changing either one.
+ * `@gaunt-sloth/agent/middleware/frontendImageInjectionMiddleware.js` carries the same
+ * `capture_image` -> vision-block conversion; RC-22 promoted it out of this file. The two are
+ * deliberately not merged, but they DO share the part that was drifting: the per-provider block
+ * table `imageBlockFor` is imported from gaunt-sloth below rather than kept as a second copy here.
+ * A per-provider fix therefore lands in gaunt-sloth once and reaches the robot on its next
+ * `@gaunt-sloth/agent` bump, instead of having to be made twice by two people who do not know
+ * about each other.
+ *
+ * Why the scan loop below is still robot-local, and NOT a wrapper around gth's factory (RC-23).
+ * gth's `createFrontendImageInjectionMiddleware` cannot emit a motion frame under any setting:
+ *   - its options are exactly `{ provider, toolName? }`, and `toolName` is ONE name — the four
+ *     `MOTION_TOOL_NAMES` cannot be matched alongside `capture_image`;
+ *   - both of its strings are hardcoded (`Camera frame captured:` / `Camera unavailable: …`),
+ *     whereas a motion frame needs `Before/After frames for <motion>.` and `Motion (<tool>) failed`;
+ *   - `payload.motion`, the human-facing label those strings interpolate, is not part of gth's
+ *     envelope model at all.
+ * So this scan loop has to exist whatever we do. Wrapping would mean running gth's hook for
+ * `capture_image` and this loop for the motion tools: it removes no code, it adds a chained call
+ * plus the `beforeModel`-is-a-function-or-`{hook}` unwrapping that even our own tests need a helper
+ * for, and it splits one chronological scan into two category-grouped passes — which changes which
+ * frame the context-pruner's "keep the latest N image HumanMessages" step retains when a capture
+ * and a motion result are pending together. The seam actually worth sharing was `imageBlockFor`.
+ *
+ * A change to the capture path in either file should be made in the other.
+ */
 import { createMiddleware } from 'langchain';
 import { HumanMessage, isToolMessage } from '@langchain/core/messages';
 import type { MessageContent } from '@langchain/core/messages';
+import { imageBlockFor } from '@gaunt-sloth/agent/middleware/frontendImageInjectionMiddleware.js';
 import { MOTION_TOOL_NAMES } from './robotToolNames.js';
 import type { LlmProvider } from "../lib/config.js";
 
@@ -23,46 +55,24 @@ const MOTION_NAMES: ReadonlySet<string> = new Set(MOTION_TOOL_NAMES);
 const injectedByThread = new Map<string, Set<string>>();
 
 export interface ImageInjectionOptions {
-  // Providers disagree on the vision-block shape they can decode; see
-  // `imageBlockFor` for the per-provider mapping and the evidence behind it.
+  // Providers disagree on the vision-block shape they can decode. The mapping and
+  // the evidence behind it live in gaunt-sloth's `imageBlockFor` (imported above);
+  // each of robot's five `LlmProvider` values is covered there. Two notes on the
+  // ones that differ from a naive reading of that table:
+  //   - anthropic gets the provider-NATIVE block {type:'image', source:{type:'base64',
+  //     media_type, data}}, not the LangChain standard `source_type` one. Measured
+  //     against the installed @langchain/anthropic 1.5.10: `_formatContentBlocks`
+  //     converts a standard block and then FALLS THROUGH (no `continue`) into its own
+  //     `type === 'image'` branch, which reads `media_type` from camelCase `mimeType` —
+  //     a key the snake_case standard block never has — and defaults it to the literal
+  //     `image/jpeg`. So a standard block yields TWO image blocks, the second
+  //     mislabelled; the native block yields exactly one, correctly labelled.
+  //   - robot's `'google'` has no explicit case in gth's switch and rides its `default`
+  //     branch, which is the same standard base64 block robot has always emitted for
+  //     google. Identical output today — but gth naming its google providers
+  //     `google-genai`/`vertexai` means a future explicit `case 'google'` there would
+  //     change robot silently. `rc21VisionBlockShape.test.ts` pins the shape.
   provider: LlmProvider;
-}
-
-// A vision content block the target provider's @langchain converter actually
-// decodes. Verified against the installed converters (RC-21):
-//   - ollama    → {type:'image_url', image_url:<data-URL string>}. ChatOllama's
-//                 convertToOllamaMessages only handles `image_url` blocks
-//                 (utils.ts extractBase64FromDataUrl); the LangChain standard
-//                 `source_type` block THROWS "Unsupported content type: image".
-//   - openai /  → {type:'image_url', image_url:{url:<data-URL>}}. This is the
-//     openrouter  native OpenAI shape and is correct on BOTH the Completions API
-//                 (gpt-5.5 / gpt-5.6-luna → `image_url`) AND the Responses API
-//                 (gpt-*-pro / codex → `input_image`). A raw `source_type`
-//                 standard block serialises to an *invalid* `image_url` part on
-//                 the Responses path, so we emit the provider-native shape
-//                 rather than lean on @langchain/core's (deprecated, internal)
-//                 isDataContentBlock auto-conversion.
-//   - anthropic → LangChain standard {type:'image', source_type:'base64', ...}.
-//     / google    ChatAnthropic (native) and ChatGoogle (→ inlineData) both
-//                 decode the standard data content block directly.
-function imageBlockFor(provider: LlmProvider, mimeType: string, data: string) {
-  const dataUrl = `data:${mimeType};base64,${data}`;
-  switch (provider) {
-    case 'ollama':
-      return { type: 'image_url' as const, image_url: dataUrl };
-    case 'openai':
-    case 'openrouter':
-      return { type: 'image_url' as const, image_url: { url: dataUrl } };
-    case 'anthropic':
-    case 'google':
-    default:
-      return {
-        type: 'image' as const,
-        source_type: 'base64' as const,
-        mime_type: mimeType,
-        data,
-      };
-  }
 }
 
 export function createFrontendImageInjectionMiddleware(opts: ImageInjectionOptions) {

@@ -1,13 +1,24 @@
 // RC-21 defect (2) — the injected vision block must be the shape each provider's
-// installed @langchain converter actually decodes. Asserts the per-provider
-// mapping in frontendImageInjectionMiddleware (`imageBlockFor`).
+// installed @langchain converter actually decodes. Asserts, through robot's own
+// middleware, the per-provider mapping it emits. Since RC-23 that mapping is
+// gaunt-sloth's exported `imageBlockFor`, so these cases also pin the contract
+// robot depends on across a `@gaunt-sloth/agent` bump — they are the thing that
+// fails if that shared table ever moves under us.
 //
-// The concrete shapes were verified against the installed converters (see the
-// RC-21 report's truth table): ChatOpenAI/ChatOpenRouter want
-// {type:'image_url', image_url:{url}} (correct on both the Completions and
-// Responses API paths); ChatOllama wants {type:'image_url', image_url:<string>};
-// ChatAnthropic (native) and ChatGoogle (→ inlineData) decode the LangChain
-// standard {type:'image', source_type:'base64', ...} block.
+// The concrete shapes were verified against the installed converters:
+// ChatOpenAI/ChatOpenRouter want {type:'image_url', image_url:{url}} (correct on
+// both the Completions and Responses API paths); ChatOllama wants
+// {type:'image_url', image_url:<string>}; ChatGoogle (→ inlineData) decodes the
+// LangChain standard {type:'image', source_type:'base64', ...} block.
+//
+// ChatAnthropic is the exception, and it wants the provider-NATIVE block. Measured
+// against the installed @langchain/anthropic 1.5.10: `_formatContentBlocks` converts
+// a standard block and then falls through (no `continue`) into its own
+// `type === 'image'` branch, which reads `media_type` from camelCase `mimeType` — a
+// key the snake_case standard block never has — and defaults it to the literal
+// `image/jpeg`. A standard block therefore yields TWO image blocks, the second
+// mislabelled (and a non-JPEG capture 400s on that copy); the native block yields
+// exactly one, correctly labelled.
 import { describe, it, expect } from 'vitest'
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages'
 import { createFrontendImageInjectionMiddleware } from '../src/agent/frontendImageInjectionMiddleware.js'
@@ -26,9 +37,12 @@ function getBeforeModel(mw: unknown): (s: unknown, r: unknown) => Promise<unknow
   throw new Error('no beforeModel hook')
 }
 
-// Globally-unique nonce: `injectedByThread` is module-level with no reset, so
-// thread_id + tool_call_id must be unique per call to avoid cross-test guard
-// bleed (two calls in the same ms would otherwise share a thread).
+// Globally-unique nonce: robot's OWN `injectedByThread` is module-level with no
+// reset, so thread_id + tool_call_id must be unique per call to avoid cross-test
+// guard bleed (two calls in the same ms would otherwise share a thread). Only the
+// per-provider block table is imported from gaunt-sloth — the idempotency state
+// stays robot's, and gaunt-sloth's is closure-scoped per instance rather than
+// module-level, so do not reason about this guard from that file.
 let nonce = 0
 
 // Run FI over a data-bearing capture turn and return the injected image block.
@@ -78,12 +92,10 @@ describe('RC-21 defect (2) — provider-correct injected vision block shape', ()
     })
   })
 
-  it('anthropic → LangChain standard {type:"image", source_type:"base64", ...}', async () => {
+  it('anthropic → provider-native {type:"image", source:{type:"base64", media_type, data}} (emitted ONCE; the standard block double-emits)', async () => {
     expect(await injectedImageBlock('anthropic')).toEqual({
       type: 'image',
-      source_type: 'base64',
-      mime_type: MIME,
-      data: DATA,
+      source: { type: 'base64', media_type: MIME, data: DATA },
     })
   })
 
