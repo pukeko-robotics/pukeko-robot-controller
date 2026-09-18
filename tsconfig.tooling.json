@@ -18,7 +18,17 @@
     "playwright.config.ts",
     "pukeko.config.example.ts",
     "e2e/**/*",
-    "scripts/**/*"
+    "scripts/**/*",
+    // RC-12's measurement harness, which is the same kind of file as the three
+    // above: run by hand, against a booted stack. `measure-e2e/` is deliberately
+    // NOT `e2e/` — `playwright.config.ts` collects `e2e/`, so a measurement spec
+    // living there would join `pnpm run e2e`, robot's deterministic gate, and sit
+    // for its whole deadline waiting on an emulator and a live key that gate does
+    // not provide.
+    "rc12-measure.js",
+    "rc12-cache-probe.ts",
+    "playwright.rc12.config.ts",
+    "measure-e2e/**/*"
   ],
   "compilerOptions": {
     "noEmit": true,

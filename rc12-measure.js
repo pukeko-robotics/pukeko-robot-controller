@@ -154,7 +154,7 @@ try {
   code = await new Promise((res) => {
     const t = spawn(
       resolve(__dirname, 'node_modules/.bin/playwright'),
-      ['test', 'e2e/rc12-measure.spec.ts', ...process.argv.slice(2)],
+      ['test', '--config', 'playwright.rc12.config.ts', ...process.argv.slice(2)],
       { cwd: __dirname, stdio: 'inherit', env: { ...process.env, RC12_DUMP_DIR: DUMP_DIR } },
     )
     t.on('close', res)
