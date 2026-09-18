@@ -24,8 +24,8 @@
   "dependencies": {
     "@copilotkit/vue": "1.72.0",
     "@galvanized-pukeko/vue-ui": "^0.2.4",
-    "@gaunt-sloth/agent": "2.0.0-beta.5",
-    "@gaunt-sloth/core": "2.0.0-beta.5",
+    "@gaunt-sloth/agent": "2.0.0-beta.13",
+    "@gaunt-sloth/core": "2.0.0-beta.13",
     "@langchain/anthropic": "^1.5.10",
     "@langchain/core": "^1.2.11",
     "@langchain/google": "^0.2.6",
