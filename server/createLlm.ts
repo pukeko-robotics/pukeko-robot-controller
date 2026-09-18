@@ -1,4 +1,8 @@
-import { ChatAnthropic } from '@langchain/anthropic';
+import {
+  ChatAnthropic,
+  type AnthropicCacheControl,
+  type ChatAnthropicInput,
+} from '@langchain/anthropic';
 import { ChatGoogle } from '@langchain/google/node';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatOpenAI } from '@langchain/openai';
@@ -29,6 +33,61 @@ import { ScriptedRobotChatModel } from './test-support/scriptedRobotModel.js';
 // support tool_choice at all (`tool_choice?: never`), so the Ollama/Gemma path
 // is unset anyway and leans on lazy-tool-recovery.
 const NO_PARALLEL_TOOLS = { parallel_tool_calls: false, tool_choice: 'auto' } as const;
+
+/**
+ * Anthropic prompt caching. **Written against `@langchain/anthropic` 1.5.10** — the
+ * version this repo pins. Re-read `invocationParams` in the library on any bump; the
+ * key is which channel it takes `cache_control` from.
+ *
+ * On 1.5.10 that channel is **per-invocation call options and nothing else**. The
+ * library builds the request with `cache_control: options?.cache_control` and never
+ * reads a `cache_control` off the instance — so a value handed to the constructor is
+ * stored and never sent. That is measured, not inferred: a three-arm live probe
+ * (RC-69) got cache_creation 0 and cache_read 0 from the constructor form, and 4,738
+ * tokens written then read back from the per-call form over the same prompt.
+ *
+ * Nothing in the library's types invites the constructor form — `cache_control` is
+ * declared on the call-options type and not on `AnthropicInput`. What hid the mistake
+ * was the spelling: a conditional object spread, which TypeScript does not
+ * excess-property-check, so the key went in silently where a plain property would
+ * have been a compile error. Keep the opt-in a declared field, as below, and the type
+ * checker is back on the case.
+ *
+ * The per-call option cannot be pre-bound with `withConfig`/`bind` here, because those
+ * return a `RunnableBinding` and the engine needs a bindable `BaseChatModel` (the same
+ * constraint written out on the google branch below). Defaulting the option inside
+ * `invocationParams` is the one seam that covers every request the instance makes —
+ * plain invoke, streaming, and the binding `bindTools` returns — and it keeps the value
+ * where tracing and `tests/anthropicPromptCaching.test.ts` can see it.
+ *
+ * The field is spelled `cacheControl` so it cannot be mistaken for the library's own
+ * `cache_control`, which is a per-call option and means something narrower: the value
+ * for one request rather than the default for every request this model makes. Being a
+ * constructor field is also what carries it through `toolFreeModel`, which rebuilds a
+ * model from its `lc_kwargs` for the tool-less summarization sub-calls. An explicit
+ * per-call `cache_control` still wins, including an explicit `null` to turn the
+ * breakpoint off for one request.
+ */
+type CachingChatAnthropicInput = ChatAnthropicInput & {
+  cacheControl?: AnthropicCacheControl;
+};
+
+class CachingChatAnthropic extends ChatAnthropic {
+  private readonly cacheControl?: AnthropicCacheControl;
+
+  constructor(fields: CachingChatAnthropicInput) {
+    super(fields);
+    this.cacheControl = fields.cacheControl;
+  }
+
+  override invocationParams(options?: this['ParsedCallOptions']) {
+    const params = super.invocationParams(options);
+    if (this.cacheControl !== undefined && params.cache_control === undefined) {
+      params.cache_control = this.cacheControl;
+    }
+    return params;
+  }
+}
 
 export type { LlmProvider, LlmSpec };
 
@@ -75,7 +134,7 @@ export function createLlm(spec: LlmSpec): LlmSelection {
       // type "auto" lets the model talk or act per turn (not forced);
       // disable_parallel_tool_use keeps it to one call so the interrupt ordering
       // holds.
-      llm: new ChatAnthropic({
+      llm: new CachingChatAnthropic({
         model: spec.model,
         invocationKwargs: {
           tool_choice: { type: 'auto', disable_parallel_tool_use: true },
@@ -84,7 +143,16 @@ export function createLlm(spec: LlmSpec): LlmSelection {
         // top-level cache_control makes @langchain/anthropic place — and advance across
         // turns — the cache breakpoint automatically, so the stable system prompt + tool
         // schemas are re-read at ~0.1x instead of billed as full input tokens every turn.
-        ...(spec.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
+        // It has to travel as a per-call option; see CachingChatAnthropic above for why,
+        // and for the measurement that settled it. Left off, this class adds nothing and
+        // the model is exactly the ChatAnthropic it has always been.
+        //
+        // Written as a plain property, not a conditional spread. A spread is how the
+        // inert version got past the type checker, and the difference is not stylistic:
+        // TypeScript excess-property-checks this line, so a key the constructor does not
+        // declare — a rename upstream, a typo here — is a compile error rather than a
+        // silently ignored object.
+        cacheControl: spec.cache ? { type: 'ephemeral' } : undefined,
       }),
     };
   }
