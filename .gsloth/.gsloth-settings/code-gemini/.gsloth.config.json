@@ -6,7 +6,7 @@
   },
   "consoleLevel": "ERROR",
   "prompts": {
-    "guidelines": "CLAUDE.md"
+    "guidelines": "AGENTS.md"
   },
   "builtInTools": {
     "gth_checklist": true,
