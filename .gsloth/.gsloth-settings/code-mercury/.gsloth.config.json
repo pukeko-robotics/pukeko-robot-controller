@@ -1,0 +1,33 @@
+{
+  "$schema": "https://gauntsloth.app/schema/v2/gsloth-config.schema.json",
+  "llm": {
+    "type": "openai",
+    "model": "mercury-2.5",
+    "apiKeyEnvironmentVariable": "INCEPTION_API_KEY",
+    "configuration": {
+      "baseURL": "https://api.inceptionlabs.ai/v1"
+    }
+  },
+  "consoleLevel": "ERROR",
+  "prompts": {
+    "guidelines": "CLAUDE.md"
+  },
+  "builtInTools": {
+    "gth_checklist": true,
+    "gth_grep": true,
+    "run_shell_command": true,
+    "run_build": {
+      "command": "pnpm run build"
+    },
+    "run_tests": {
+      "command": "pnpm run test"
+    },
+    "run_single_test": {
+      "command": "pnpm exec vitest run ${testPath}"
+    }
+  },
+  "approvals": {
+    "mode": "auto",
+    "rater": "code-rater"
+  }
+}

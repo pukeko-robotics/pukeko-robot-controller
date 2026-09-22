@@ -1,0 +1,29 @@
+{
+  "$schema": "https://gauntsloth.app/schema/v2/gsloth-config.schema.json",
+  "llm": {
+    "type": "xai",
+    "model": "grok-4.7"
+  },
+  "consoleLevel": "ERROR",
+  "prompts": {
+    "guidelines": "CLAUDE.md"
+  },
+  "builtInTools": {
+    "gth_checklist": true,
+    "gth_grep": true,
+    "run_shell_command": true,
+    "run_build": {
+      "command": "pnpm run build"
+    },
+    "run_tests": {
+      "command": "pnpm run test"
+    },
+    "run_single_test": {
+      "command": "pnpm exec vitest run ${testPath}"
+    }
+  },
+  "approvals": {
+    "mode": "auto",
+    "rater": "code-rater"
+  }
+}
