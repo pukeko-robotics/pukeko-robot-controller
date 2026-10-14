@@ -72,8 +72,7 @@ import {
 // AG-UI HttpAgent, no CopilotKit cloud runtime), inlined here because the
 // robot embeds the chat INSIDE its own Cockpit/Tutor chrome rather than under
 // the full-app PkAppChrome wrapper.
-import { CopilotKitProvider, HttpAgent } from '@copilotkit/vue/v2'
-import { HeadlessChat } from '@galvanized-pukeko/vue-ui/copilot'
+import { CopilotKitProvider, HttpAgent, HeadlessChat } from '@galvanized-pukeko/vue-ui/copilot'
 import { getRobotPreset, listPresets } from './agent/robotPresets/index.js'
 import {
   captureUrlForWorld,

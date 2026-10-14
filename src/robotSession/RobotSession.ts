@@ -14,7 +14,7 @@ import {
   createCaptureImageToolDeclaration,
   type Tool,
 } from '@galvanized-pukeko/vue-ui';
-import type { VueFrontendTool } from '@copilotkit/vue/v2';
+import type { VueFrontendTool } from '@galvanized-pukeko/vue-ui/copilot';
 import { DEFAULT_ROBOT_PRESET_ID, getClientToolDefs } from '../agent/robotPresets/index.js';
 import type { RobotToolDef } from '../agent/robotPresets/index.js';
 import {
